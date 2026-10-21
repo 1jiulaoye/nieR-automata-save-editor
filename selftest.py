@@ -29,7 +29,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import constants as K
 import save_io as SIO
 from chip_data import REGISTRY as CHIPS
-from item_data import get_item_name, get_category, is_weapon, ITEM_NAMES
+from item_data import (
+    get_item_name, get_weapon_name, get_category, is_weapon,
+    ITEM_NAMES, WEAPON_NAMES, CATEGORY_ORDER, ITEM_CATEGORIES,
+    search_items,
+)
 from save_io import (
     SaveError, SaveFile, BACKUP_MANIFEST_NAME, find_backup_pairs,
     load_backup_manifest, replace_files_atomically,
@@ -66,9 +70,15 @@ def make_slot(path: str, money: int = 5000) -> str:
     for i in range(K.SLOT_MAX_ITEMS):
         off = K.OFFSET_ITEMS_START + i * K.ITEM_RECORD_SIZE
         struct.pack_into("<H", s, off, K.ITEM_EMPTY_ID)
-    # 芯片区：全 0xFF = 空
-    s[K.OFFSET_CHIPS_START:K.OFFSET_CHIPS_START + K.MAX_CHIPS * K.CHIP_RECORD_SIZE] = (
-        b"\xff" * (K.MAX_CHIPS * K.CHIP_RECORD_SIZE)
+    # 尸体背包 / 武器表 / 芯片区的空槽都是 0xFF（武器 id == -1）
+    s[K.CORPSE_ITEMS_START:K.CORPSE_ITEMS_END] = (
+        b"\xff" * (K.CORPSE_ITEMS_END - K.CORPSE_ITEMS_START)
+    )
+    s[K.WEAPONS_START:K.WEAPONS_END] = (
+        b"\xff" * (K.WEAPONS_END - K.WEAPONS_START)
+    )
+    s[K.OFFSET_CHIPS_START:K.CHIPS_END] = (
+        b"\xff" * (K.CHIPS_END - K.OFFSET_CHIPS_START)
     )
     with open(path, "wb") as f:
         f.write(s)
@@ -153,9 +163,12 @@ def _test_a1(tmp: str) -> None:
     ed.slotdata = SaveFile(sd0)
     ed._loaded_slot = 0
     ed._money_items_dirty = False
+    ed._weapons_dirty = False
     ed._chips_dirty = False
     ed._refresh_money = lambda: None
     ed._refresh_items = lambda: None
+    ed._refresh_weapons = lambda: None
+    ed._refresh_corpse = lambda: None
     ed._refresh_chips = lambda: None
 
     # Slot 0 改金币（模拟 GUI 同时写两个对象）
@@ -499,11 +512,16 @@ def _make_editor(nier_editor, gd: str, sd: str):
     ed.slotdata = SaveFile(sd)
     ed.status_var = nier_editor.tk.StringVar("")
     ed._money_items_dirty = False
+    ed._weapons_dirty = False
     ed._chips_dirty = False
     ed._refresh_money = lambda: None
     ed._refresh_items = lambda: None
+    ed._refresh_weapons = lambda: None
+    ed._refresh_corpse = lambda: None
     ed._refresh_chips = lambda: None
     ed.item_amount_var = nier_editor.tk.StringVar("1")
+    ed.weapon_level_var = nier_editor.tk.IntVar(1)
+    ed.weapon_add_var = nier_editor.tk.StringVar("")
     return ed
 
 
@@ -745,64 +763,429 @@ def _test_a11(tmp: str) -> None:
 
 
 def _test_a12(tmp: str) -> None:
-    """A12：武器增/减/设数量强制 1、重复添加不累加、列表显示 1。"""
-    print("\nA12 武器数量（GUI 对象级）")
+    """A12：武器表 39×20B、5 个 int32、等级 1..4、空槽与增删。"""
+    print("\nA12 武器表读写与空槽")
     d = os.path.join(tmp, "a12")
+    os.makedirs(d)
+    gd, sd = make_saves(d)
+    s = SaveFile(sd)
+    K_WEAPONS_START = K.WEAPONS_START
+
+    ws = s.get_weapons()
+    check("A12 武器表固定 39 条", len(ws) == K.WEAPONS_COUNT, str(len(ws)))
+    check("A12 初始 39 条全部为空槽", all(w["empty"] for w in ws))
+    check("A12 武器表起始偏移 = 0x31D70", K.WEAPONS_START == 0x31D70)
+    check("A12 武器记录长度 = 20 字节", K.WEAPON_RECORD_SIZE == 20)
+    check("A12 武器表结束偏移 = 0x3207C",
+          K.WEAPONS_END == 0x3207C, hex(K.WEAPONS_END))
+
+    check("A12 add_weapon 写入第一个空槽", s.add_weapon(0x042E) is True)
+    w = s.get_weapons()[0]
+    check("A12 新武器 id/level/new_item/new_story/enemies 正确",
+          (w["id"], w["level"], w["new_item"], w["new_story"],
+           w["enemies_defeated"]) == (0x042E, 1, 1, 1, 0), str(w))
+    check("A12 新武器名称来自 WEAPON_NAMES",
+          w["name"] == get_weapon_name(0x042E) == "白之契约", w["name"])
+
+    before = bytes(s._data[K_WEAPONS_START:K_WEAPONS_START + 20])
+    s.set_weapon_level(0, 4)
+    after = bytes(s._data[K_WEAPONS_START:K_WEAPONS_START + 20])
+    diff = [i for i in range(20) if before[i] != after[i]]
+    check("A12 改等级只改该条记录第 2 个 int32（偏移 +4..+7）",
+          bool(diff) and set(diff) <= set(range(4, 8)), str(diff))
+    check("A12 等级回读 4", s.get_weapons()[0]["level"] == 4)
+    check("A12 其余 4 个 int32 未变",
+          before[:4] == after[:4] and before[8:] == after[8:])
+
+    bad_levels = []
+    for bad in (0, -1, 5, 9, "3"):
+        try:
+            s.set_weapon_level(0, bad)
+        except (ValueError, TypeError):
+            bad_levels.append(bad)
+    check("A12 非法等级 0/-1/5/9/'3' 全部拒绝",
+          bad_levels == [0, -1, 5, 9, "3"], str(bad_levels))
+    check("A12 非法等级未改变原等级", s.get_weapons()[0]["level"] == 4)
+
+    empty_rejected = False
+    try:
+        s.set_weapon_level(1, 2)  # index 1 仍是 -1 空槽
+    except ValueError:
+        empty_rejected = True
+    check("A12 空槽改等级被拒绝", empty_rejected)
+
+    idx_rejected = []
+    for bad_idx in (-1, K.WEAPONS_COUNT, 100):
+        try:
+            s.set_weapon_level(bad_idx, 2)
+        except IndexError:
+            idx_rejected.append(bad_idx)
+    check("A12 set_weapon_level 负索引/39/100 抛 IndexError",
+          idx_rejected == [-1, K.WEAPONS_COUNT, 100], str(idx_rejected))
+
+    unknown_rejected = False
+    try:
+        s.add_weapon(0x1234)
+    except ValueError:
+        unknown_rejected = True
+    check("A12 add_weapon 拒绝未知武器 ID", unknown_rejected)
+
+    # 填满 39 个槽，验证「第一个 id == -1」和容量上限
+    for _ in range(1, K.WEAPONS_COUNT):
+        s.add_weapon(0x03EB)
+    check("A12 可以填满 39 个武器槽",
+          all(not w["empty"] for w in s.get_weapons()))
+    check("A12 无空槽时 add_weapon 返回 False",
+          s.add_weapon(0x03EB) is False)
+
+    s.remove_weapon(0)
+    raw0 = bytes(s._data[K_WEAPONS_START:K_WEAPONS_START + 20])
+    check("A12 remove_weapon 整条写 0xFFFFFFFF",
+          raw0 == b"\xff" * 20, raw0.hex())
+    check("A12 remove_weapon 后该槽为空", s.get_weapons()[0]["empty"])
+    removed_idx_rejected = []
+    for bad_idx in (-1, K.WEAPONS_COUNT):
+        try:
+            s.remove_weapon(bad_idx)
+        except IndexError:
+            removed_idx_rejected.append(bad_idx)
+    check("A12 remove_weapon 越界抛 IndexError",
+          removed_idx_rejected == [-1, K.WEAPONS_COUNT], str(removed_idx_rejected))
+
+    size_before = os.path.getsize(sd)
+    s.save()
+    check("A12 武器修改保存后文件大小不变",
+          os.path.getsize(sd) == size_before)
+    check("A12 武器修改保存后无 .tmp 残留",
+          not [f for f in os.listdir(d) if f.endswith(".tmp")])
+
+
+def _test_a13(tmp: str) -> None:
+    """A13：尸体背包独立只读；背包写入与 sync 绝不碰尸体/武器/芯片。"""
+    print("\nA13 尸体背包隔离")
+    d = os.path.join(tmp, "a13")
+    os.makedirs(d)
+    gd, sd = make_saves(d)
+    s = SaveFile(sd)
+
+    # 在尸体背包区造两条有效记录（Status 用真实存档里的 -1）
+    struct.pack_into("<iii", s._data, K.CORPSE_ITEMS_START, 0x0001, -1, 7)
+    struct.pack_into("<iii", s._data, K.CORPSE_ITEMS_START + K.ITEM_RECORD_SIZE,
+                     0x0002, -1, 3)
+    corpse_before = bytes(s._data[K.CORPSE_ITEMS_START:K.CORPSE_ITEMS_END])
+    weapons_before = bytes(s._data[K.WEAPONS_START:K.WEAPONS_END])
+    chips_before = bytes(s._data[K.OFFSET_CHIPS_START:K.CHIPS_END])
+
+    check("A13 get_corpse_items 固定 256 条",
+          len(s.get_corpse_items()) == K.CORPSE_ITEMS_COUNT,
+          str(len(s.get_corpse_items())))
+    check("A13 尸体背包读到 2 条有效记录",
+          s.get_owned_corpse_items() == [(0x0001, 7), (0x0002, 3)],
+          str(s.get_owned_corpse_items()))
+    check("A13 get_items 不会把尸体记录算进背包",
+          s.get_owned_items() == [], str(s.get_owned_items()))
+
+    s.add_or_update_item(0x0003, 1)
+    check("A13 背包添加后尸体区逐字节不变",
+          bytes(s._data[K.CORPSE_ITEMS_START:K.CORPSE_ITEMS_END]) == corpse_before)
+    check("A13 背包添加后武器区逐字节不变",
+          bytes(s._data[K.WEAPONS_START:K.WEAPONS_END]) == weapons_before)
+    check("A13 背包添加后芯片区逐字节不变",
+          bytes(s._data[K.OFFSET_CHIPS_START:K.CHIPS_END]) == chips_before)
+    check("A13 背包添加成功", s.get_owned_items() == [(0x0003, 1)],
+          str(s.get_owned_items()))
+
+    # 背包第 255 条写入也不能越过 0x31170
+    s.set_item(255, 0x0004, 2)
+    check("A13 背包第 255 条仍位于 0x31170 之前",
+          s.get_items()[255] == (0x0004, 2))
+    check("A13 写背包第 255 条后尸体区仍不变",
+          bytes(s._data[K.CORPSE_ITEMS_START:K.CORPSE_ITEMS_END]) == corpse_before)
+
+    src = SaveFile(gd)
+    src.set_money(987654)
+    src.set_item(0, 0x0005, 9)
+    money_before = s.get_money()
+    s.sync_money_items_from(src)
+    check("A13 sync 后金币来自源存档", s.get_money() == 987654,
+          f"{money_before} -> {s.get_money()}")
+    check("A13 sync 后背包 256 条与源一致",
+          s.get_items() == src.get_items())
+    check("A13 sync 不碰尸体背包",
+          bytes(s._data[K.CORPSE_ITEMS_START:K.CORPSE_ITEMS_END]) == corpse_before)
+    check("A13 sync 不碰武器表",
+          bytes(s._data[K.WEAPONS_START:K.WEAPONS_END]) == weapons_before)
+    check("A13 sync 不碰芯片表",
+          bytes(s._data[K.OFFSET_CHIPS_START:K.CHIPS_END]) == chips_before)
+    check("A13 尸体背包没有写入 API",
+          not hasattr(s, "set_corpse_item") and not hasattr(s, "add_corpse_item"))
+
+
+def _test_a14(tmp: str) -> None:
+    """A14：背包 256 / 芯片 256 的边界与满容量。"""
+    print("\nA14 256 条容量边界")
+    d = os.path.join(tmp, "a14")
+    os.makedirs(d)
+    gd, sd = make_saves(d)
+    s = SaveFile(sd)
+
+    check("A14 背包只暴露 256 条", len(s.get_items()) == K.ITEMS_COUNT == 256,
+          str(len(s.get_items())))
+    check("A14 get_items(999) 仍只返回 256 条",
+          len(s.get_items(999)) == 256, str(len(s.get_items(999))))
+    money = s.get_money()
+    rejected = []
+    for bad_idx in (-1, -12, K.ITEMS_COUNT, 600):
+        try:
+            s.set_item(bad_idx, 0x0000, 1)
+        except IndexError:
+            rejected.append(bad_idx)
+    check("A14 背包索引 -1/-12/256/600 抛 IndexError",
+          rejected == [-1, -12, K.ITEMS_COUNT, 600], str(rejected))
+    check("A14 越界写入后金币不变", s.get_money() == money)
+
+    s.set_item(255, 0x0000, 5)
+    check("A14 背包第 255 条可正常写入",
+          s.get_items()[255] == (0x0000, 5), str(s.get_items()[255]))
+
+    s2 = SaveFile(sd)
+    for i in range(255):
+        s2.set_item(i, 0x0001, 1)
+    check("A14 仅剩第 255 槽为空时 add_or_update 成功",
+          s2.add_or_update_item(0x0003, 1) is True)
+    check("A14 新道具落在第 255 槽",
+          s2.get_items()[255] == (0x0003, 1), str(s2.get_items()[255]))
+    check("A14 256 条全满后 add_or_update 返回 False",
+          s2.add_or_update_item(0x0004, 1) is False)
+
+    # 芯片：256 条上限
+    s3 = SaveFile(sd)
+    chip = CHIPS.to_bytes("HP最大值UP +3")
+    added_all = True
+    for _ in range(K.CHIPS_COUNT):
+        if not s3.add_chip(chip):
+            added_all = False
+            break
+    check("A14 芯片可写满 256 条", added_all)
+    check("A14 get_chips 只返回 256 条",
+          len(s3.get_chips()) == K.CHIPS_COUNT == 256,
+          str(len(s3.get_chips())))
+    check("A14 第 256 条芯片之后 add_chip 返回 False",
+          s3.add_chip(chip) is False)
+    s3.remove_chip(255)
+    check("A14 remove_chip(255) 后该槽为空", s3.get_chips()[255]["empty"])
+    check("A14 删除后可以再次添加", s3.add_chip(chip) is True)
+    chip_rejected = []
+    for bad_idx in (-1, K.CHIPS_COUNT, 600):
+        try:
+            s3.remove_chip(bad_idx)
+        except IndexError:
+            chip_rejected.append(bad_idx)
+    check("A14 芯片索引 -1/256/600 抛 IndexError",
+          chip_rejected == [-1, K.CHIPS_COUNT, 600], str(chip_rejected))
+    check("A14 布局常量首尾相接",
+          K.ITEMS_END == K.CORPSE_ITEMS_START
+          and K.CORPSE_ITEMS_END == K.WEAPONS_START
+          and K.WEAPONS_END <= K.OFFSET_CHIPS_START)
+
+    size_before = os.path.getsize(sd)
+    s3.save()
+    check("A14 满容量芯片保存后文件大小不变",
+          os.path.getsize(sd) == size_before)
+    check("A14 满容量芯片保存后无 .tmp 残留",
+          not [f for f in os.listdir(d) if f.endswith(".tmp")])
+
+
+def _test_a15(tmp: str) -> None:
+    """A15：武器 tab（只读下拉框 / 等级 1..4 / 增删 / 只写 SlotData）。"""
+    print("\nA15 武器 tab（GUI 对象级）")
+    d = os.path.join(tmp, "a15")
     os.makedirs(d)
     gd, sd = make_saves(d)
     _install_gui_stubs()
     import nier_editor
     _prepare_gui_stubs(nier_editor)
     msgs = _capture_messagebox(nier_editor)
+    nier_editor.messagebox.askyesno = lambda *a, **k: True
 
-    weapon = 0x042E  # 白之契约
+    ui = object.__new__(nier_editor.NierSaveEditor)
+    ui.weapon_tab = _FakeWidget()
+    ui._build_weapon_tab()
+    check("A15 武器添加下拉框 state=readonly",
+          ui.weapon_add_cb.cget("state") == "readonly",
+          str(ui.weapon_add_cb.cget("state")))
+    values = list(ui.weapon_add_cb.kwargs.get("values", []))
+    check("A15 武器下拉框正好 39 项", len(values) == 39, str(len(values)))
+    parsed = [int(v.rsplit("0x", 1)[1].rstrip(")"), 16) for v in values]
+    check("A15 武器下拉框全部来自 WEAPON_NAMES",
+          set(parsed) == set(WEAPON_NAMES), str(set(parsed) ^ set(WEAPON_NAMES)))
+    check("A15 武器下拉框不含道具 ID",
+          not any(i in ITEM_NAMES for i in parsed))
+
     ed = _make_editor(nier_editor, gd, sd)
-    ed.gamedata.set_item(0, weapon, 1)
-    ed.slotdata.set_item(0, weapon, 1)
-    ed._get_selected_item_index = lambda: (0, weapon, ed.slotdata.get_item(weapon))
-    ed.item_amount_var.set("10")
+    ed.weapon_tree = _FakeTree()
+    ed.weapon_count_label = _FakeWidget()
+    nier_editor.NierSaveEditor._refresh_weapons(ed)
+    check("A15 武器列表列出 39 条", len(ed.weapon_tree.rows) == 39,
+          str(len(ed.weapon_tree.rows)))
+    check("A15 空存档 39 条均显示未获得",
+          all(r[1][2] == "未获得" for r in ed.weapon_tree.rows))
 
-    for direction in (1, -1, 0):
+    ed.weapon_add_var.set("白之契约 (0x042E)")
+    msgs["warning"].clear()
+    ed._add_weapon()
+    check("A15 GUI 添加武器写入 SlotData",
+          ed.slotdata.get_weapons()[0]["id"] == 0x042E
+          and ed.slotdata.get_weapons()[0]["level"] == 1,
+          str(ed.slotdata.get_weapons()[0]))
+    check("A15 添加武器设置脏标记", ed._weapons_dirty is True)
+    nier_editor.NierSaveEditor._refresh_weapons(ed)
+    check("A15 添加后列表中有一把已获得",
+          sum(1 for r in ed.weapon_tree.rows if r[1][2] == "已获得") == 1)
+
+    msgs["warning"].clear()
+    ed._add_weapon()
+    check("A15 重复添加同一武器被拒绝且提示",
+          bool(msgs["warning"]) and "已经拥有" in msgs["warning"][-1][1]
+          and sum(1 for w in ed.slotdata.get_weapons() if not w["empty"]) == 1,
+          f"warnings={msgs['warning']}")
+
+    ed._get_selected_weapon_index = lambda: 0
+    ed.weapon_level_var.set(4)
+    msgs["error"].clear()
+    ed._set_weapon_level()
+    check("A15 GUI 改等级 4 成功",
+          ed.slotdata.get_weapons()[0]["level"] == 4 and not msgs["error"],
+          str(ed.slotdata.get_weapons()[0]))
+    for bad in (0, 5):
+        ed.weapon_level_var.set(bad)
         msgs["warning"].clear()
-        try:
-            ed._mod_item(direction)
-            crashed = False
-        except Exception:
-            crashed = True
-        check(f"A12 武器 direction={direction} 强制数量 1 并提示不可堆叠",
-              not crashed and ed.slotdata.get_item(weapon) == 1
-              and ed.gamedata.get_item(weapon) == 1
-              and bool(msgs["warning"])
-              and "武器" in msgs["warning"][-1][0],
-              f"amount={ed.slotdata.get_item(weapon)}, warnings={msgs['warning']}")
+        ed._set_weapon_level()
+        check(f"A15 GUI 非法等级 {bad} 被拒绝且不写入",
+              ed.slotdata.get_weapons()[0]["level"] == 4
+              and bool(msgs["warning"]))
 
-    ed2 = _make_editor(nier_editor, gd, sd)
-    ed2.item_add_var = nier_editor.tk.StringVar("白之契约 (0x042E)")
-    msgs["warning"].clear()
-    ed2._add_item()
-    check("A12 下拉框添加武器使用数量 1",
-          ed2.slotdata.get_item(weapon) == 1,
-          f"amount={ed2.slotdata.get_item(weapon)}")
-    msgs["warning"].clear()
-    ed2._add_item()
-    check("A12 重复添加同一武器不会累加到 2",
-          ed2.slotdata.get_item(weapon) == 1
-          and bool(msgs["warning"])
-          and "武器" in msgs["warning"][-1][0],
-          f"amount={ed2.slotdata.get_item(weapon)}, warnings={msgs['warning']}")
+    # 只改武器时，保存只写 SlotData，GameData 逐字节不变
+    gd_before = open(gd, "rb").read()
+    ed.save_folder = nier_editor.tk.StringVar(d)
+    ed.cur_slot = nier_editor.tk.IntVar(0)
+    ed._load_weapon_gui = True
+    msgs["info"].clear()
+    ed._save_all()
+    check("A15 只改武器保存成功并提示", bool(msgs["info"]),
+          str(msgs["info"]))
+    check("A15 只改武器时 GameData 逐字节不变",
+          open(gd, "rb").read() == gd_before)
+    check("A15 只改武器时 SlotData 已写盘",
+          SaveFile(sd).get_weapons()[0]["level"] == 4)
+    check("A15 保存后武器脏标记清零", ed._weapons_dirty is False)
+    check("A15 只改武器保存后无 .tmp 残留",
+          not [f for f in os.listdir(d) if f.endswith(".tmp")])
 
-    ed3 = _make_editor(nier_editor, gd, sd)
-    ed3.item_tree = _FakeTree()
-    ed3.item_search_var = nier_editor.tk.StringVar("")
-    ed3.item_cat_var = nier_editor.tk.StringVar("全部")
-    ed3.show_all_var = nier_editor.tk.BooleanVar(False)
-    ed3.slotdata.set_item(0, weapon, 5)  # 模拟旧存档里的非法堆叠
-    nier_editor.NierSaveEditor._refresh_items(ed3)  # 实例上 _refresh_items 已被替身覆盖
-    weapon_rows = [r for r in ed3.item_tree.rows
-                   if r[1] and r[1][2] == f"0x{weapon:04X}"]
-    check("A12 道具列表武器行数量列显示 1",
-          len(weapon_rows) == 1 and weapon_rows[0][1][1] == 1,
-          str([r[1] for r in weapon_rows]))
+    ed._get_selected_weapon_index = lambda: 0
+    ed._remove_weapon()
+    check("A15 GUI 删除武器后该槽为空",
+          ed.slotdata.get_weapons()[0]["empty"] is True)
+
+
+def _test_a17(tmp: str) -> None:
+    """A17：真实存档回归（只读 fixture，复制到临时目录后验证）。"""
+    print("\nA17 真实存档回归")
+    fixture = "/srv/aiwork/nier-fixture"
+    if not os.path.isdir(fixture):
+        print("  ⏭ 未找到 /srv/aiwork/nier-fixture，跳过（不影响合成用例）")
+        return
+    d = os.path.join(tmp, "a17")
+    os.makedirs(d)
+    src_hash = {}
+    for name in ("GameData.dat", "SlotData_0.dat", "SlotData_1.dat"):
+        src = os.path.join(fixture, name)
+        dst = os.path.join(d, name)
+        shutil.copyfile(src, dst)
+        src_hash[name] = hashlib.sha256(open(src, "rb").read()).hexdigest()
+
+    gd = SaveFile(os.path.join(d, "GameData.dat"))
+    s0 = SaveFile(os.path.join(d, "SlotData_0.dat"))
+    s1 = SaveFile(os.path.join(d, "SlotData_1.dat"))
+
+    check("A17 GameData 背包 64 条", len(gd.get_owned_items()) == 64,
+          str(len(gd.get_owned_items())))
+    check("A17 GameData 武器 0 把（全 0 占位按空槽展示）",
+          sum(1 for w in gd.get_weapons() if not w["empty"]) == 0)
+    check("A17 GameData 已装芯片 0 条", len(gd.get_installed_chips()) == 0)
+
+    check("A17 SlotData_0 背包 0 条", len(s0.get_owned_items()) == 0,
+          str(len(s0.get_owned_items())))
+    check("A17 SlotData_0 的 13 条记录位于尸体背包（不是背包）",
+          len(s0.get_owned_corpse_items()) == 13,
+          str(len(s0.get_owned_corpse_items())))
+    check("A17 SlotData_0 武器 1 把",
+          sum(1 for w in s0.get_weapons() if not w["empty"]) == 1)
+    check("A17 SlotData_0 已装芯片 15 条",
+          len(s0.get_installed_chips()) == 15,
+          str(len(s0.get_installed_chips())))
+
+    check("A17 SlotData_1 背包 64 条", len(s1.get_owned_items()) == 64,
+          str(len(s1.get_owned_items())))
+    weapons = [w for w in s1.get_weapons() if not w["empty"]]
+    check("A17 SlotData_1 武器 9 把", len(weapons) == 9, str(len(weapons)))
+    check("A17 SlotData_1 武器等级集合 {1,2,3}",
+          {w["level"] for w in weapons} == {1, 2, 3},
+          str(sorted(w["level"] for w in weapons)))
+    check("A17 SlotData_1 已装芯片 151 条",
+          len(s1.get_installed_chips()) == 151,
+          str(len(s1.get_installed_chips())))
+    auto_names = {CHIPS.to_name(c["raw"][:12]) for c in s1.get_installed_chips()}
+    check("A17 真实存档里的 5 个 Auto 芯片全部可识别",
+          {"自动攻击", "自动射击", "自动闪避", "自动骇入", "自动换武器"}
+          <= auto_names, str(sorted(auto_names)))
+    check("A17 HUD 钓鱼提示映射为 0x012B/0x0D19/0x3A",
+          CHIPS.to_bytes("HUD：钓鱼提示")[:12]
+          == bytes.fromhex("2b010000190d00003a000000"))
+
+    after_hash = {name: hashlib.sha256(
+        open(os.path.join(fixture, name), "rb").read()).hexdigest()
+        for name in src_hash}
+    check("A17 fixture 原始文件 sha256 完全不变",
+          after_hash == src_hash, str(after_hash))
+
+
+def _test_a18(tmp: str) -> None:
+    """A18：数据表拆分与 5 个 Auto 芯片的定义。"""
+    print("\nA18 数据表 / Auto 芯片")
+    check("A18 ITEM_NAMES 恰好 221 条", len(ITEM_NAMES) == 221,
+          str(len(ITEM_NAMES)))
+    check("A18 WEAPON_NAMES 恰好 39 把", len(WEAPON_NAMES) == 39,
+          str(len(WEAPON_NAMES)))
+    check("A18 道具表与武器表无交集",
+          not (set(ITEM_NAMES) & set(WEAPON_NAMES)))
+    check("A18 分类条目总数 = 221",
+          sum(ITEM_CATEGORIES.values()) == 221, str(ITEM_CATEGORIES))
+    check("A18 分类区间不再含武器分类",
+          not any("武器" in c for c in CATEGORY_ORDER), str(CATEGORY_ORDER))
+    check("A18 白之契约在武器表", get_weapon_name(0x042E) == "白之契约")
+    check("A18 白之契约不在道具表",
+          get_item_name(0x042E).startswith("未知"))
+    check("A18 武器不属于任何道具分类", get_category(0x042E) == "其他")
+    check("A18 搜索道具不会搜出武器", search_items("白之契约") == [])
+    check("A18 道具添加下拉框数据源不含武器",
+          not any(is_weapon(i) for i in ITEM_NAMES))
+
+    expected = {
+        "自动攻击": bytes.fromhex("f80000001a0d00003b0000000000000001000000"),
+        "自动射击": bytes.fromhex("f90000001b0d00003c0000000000000001000000"),
+        "自动闪避": bytes.fromhex("fa0000001c0d00003d0000000000000001000000"),
+        "自动骇入": bytes.fromhex("fb0000001d0d00003e0000000000000001000000"),
+        "自动换武器": bytes.fromhex("fc0000001e0d00003f0000000000000001000000"),
+    }
+    for name, head20 in expected.items():
+        check(f"A18 {name} 已在系统芯片表", name in CHIPS.unique_names)
+        check(f"A18 {name} 20 字节头与真实存档一致",
+              CHIPS.to_bytes(name)[:20] == head20,
+              CHIPS.to_bytes(name)[:20].hex())
+        check(f"A18 {name} 可反查名称",
+              CHIPS.to_name(head20[:12]) == name,
+              CHIPS.to_name(head20[:12]))
 
 
 def _test_a16(tmp: str) -> None:
@@ -842,79 +1225,98 @@ def _test_a16(tmp: str) -> None:
 
 def main() -> int:
     print("数据表")
-    check("道具 + 武器共 260 条", len(ITEM_NAMES) == 260, f"实际 {len(ITEM_NAMES)}")
-    check("武器 39 把", sum(1 for i in ITEM_NAMES if is_weapon(i)) == 39)
+    check("道具表 221 条（不含武器）", len(ITEM_NAMES) == 221,
+          f"实际 {len(ITEM_NAMES)}")
+    check("武器表 39 把（独立 WEAPON_NAMES）", len(WEAPON_NAMES) == 39,
+          f"实际 {len(WEAPON_NAMES)}")
     check("小恢复药 = 0x0000", get_item_name(0) == "小恢复药")
-    check("白之契约 = 0x042E", get_item_name(0x042E) == "白之契约")
-    check("武器分类正确", get_category(0x042E) == "武器·小型剑", get_category(0x042E))
+    check("白之契约在武器表 = 0x042E", get_weapon_name(0x042E) == "白之契约")
+    check("武器不在道具表",
+          get_item_name(0x042E) != "白之契约")
+    check("武器不再属于道具分类", get_category(0x042E) == "其他",
+          get_category(0x042E))
+    check("道具分类条目数合计 221",
+          sum(ITEM_CATEGORIES.values()) == 221, str(ITEM_CATEGORIES))
+    check("分类区间已删除武器分类",
+          not any("武器" in c for c in CATEGORY_ORDER), str(CATEGORY_ORDER))
 
     tmp = tempfile.mkdtemp(prefix="nier-selftest-")
-    gd, sd = make_saves(tmp)
-
-    print("\n载入")
-    g, s = SaveFile(gd), SaveFile(sd)
-    check("GameData 载入", g.get_money() == 5000)
-    check("SlotData 载入", s.get_money() == 5000)
-    check("SlotData 道具只有 512 条", len(s.get_items()) == K.SLOT_MAX_ITEMS, str(len(s.get_items())))
-
-    print("\n写入")
-    s.add_or_update_item(0x0000, 7, limit=K.SLOT_MAX_ITEMS)      # 小恢复药
-    s.add_or_update_item(0x042E, 1, limit=K.SLOT_MAX_ITEMS)      # 白之契约
-    owned = dict(s.get_owned_items())
-    check("小恢复药写入（id=0 不被当空槽）", owned.get(0) == 7, str(owned))
-    check("武器写入", owned.get(0x042E) == 1)
-    check("武器名称", get_item_name(0x042E) == "白之契约")
-
-    chip = CHIPS.to_bytes("HP最大值UP +3")
-    check("芯片写入", s.add_chip(chip))
-    check("芯片等级回读", s.get_installed_chips()[0]["level"] == 3)
-    s.remove_chip(0)
-    check("芯片删除后判空", s.get_chips()[0]["empty"])
-    check("删除后无已装芯片", not s.get_installed_chips())
-
-    print("\n保存")
-    before = (os.path.getsize(gd), os.path.getsize(sd))
-    g.sync_money_items_from(s)
-    g.set_money(8888)
-    s.set_money(8888)
-    g.save()
-    s.save()
-    after = (os.path.getsize(gd), os.path.getsize(sd))
-    check("文件大小不变（不扩容）", before == after, f"{before} -> {after}")
-    check("无残留 .tmp", not [f for f in os.listdir(tmp) if f.endswith(".tmp")])
-
-    g2, s2 = SaveFile(gd), SaveFile(sd)
-    check("金币回读", g2.get_money() == 8888 and s2.get_money() == 8888)
-    check("道具回读", dict(s2.get_owned_items()).get(0x042E) == 1)
-    check("GameData 与 SlotData 道具区一致",
-          g2.get_items(K.SLOT_MAX_ITEMS) == s2.get_items(K.SLOT_MAX_ITEMS))
-
-    print("\n非法文件")
-    bad = os.path.join(tmp, "GameData_truncated.dat")
-    with open(bad, "wb") as f:
-        f.write(b"\x00" * 1000)
     try:
-        SaveFile(bad)
-        check("截断文件被拒绝", False)
-    except SaveError:
-        check("截断文件被拒绝", True)
+        gd, sd = make_saves(tmp)
 
-    # 本次修复新增的回归用例（A1 用无 GUI 的对象级复现）
-    _test_a1(tmp)
-    _test_a2(tmp)
-    _test_a4(tmp)
-    _test_a6(tmp)
-    _test_a7(tmp)
-    _test_a8(tmp)
-    _test_a9(tmp)
-    _test_a10(tmp)
-    _test_a11(tmp)
-    _test_a12(tmp)
-    _test_a16(tmp)
+        print("\n载入")
+        g, s = SaveFile(gd), SaveFile(sd)
+        check("GameData 载入", g.get_money() == 5000)
+        check("SlotData 载入", s.get_money() == 5000)
+        check("SlotData 背包只有 256 条",
+              len(s.get_items()) == K.ITEMS_COUNT == 256,
+              str(len(s.get_items())))
+
+        print("\n写入")
+        s.add_or_update_item(0x0000, 7, limit=K.ITEMS_COUNT)  # 小恢复药
+        owned = dict(s.get_owned_items())
+        check("小恢复药写入（id=0 不被当空槽）", owned.get(0) == 7, str(owned))
+        check("道具写入只落在背包 256 条", len(owned) == 1, str(owned))
+
+        chip = CHIPS.to_bytes("HP最大值UP +3")
+        check("芯片写入", s.add_chip(chip))
+        check("芯片等级回读", s.get_installed_chips()[0]["level"] == 3)
+        s.remove_chip(0)
+        check("芯片删除后判空", s.get_chips()[0]["empty"])
+        check("删除后无已装芯片", not s.get_installed_chips())
+
+        print("\n保存")
+        before = (os.path.getsize(gd), os.path.getsize(sd))
+        g.sync_money_items_from(s)
+        g.set_money(8888)
+        s.set_money(8888)
+        g.save()
+        s.save()
+        after = (os.path.getsize(gd), os.path.getsize(sd))
+        check("文件大小不变（不扩容）", before == after,
+              f"{before} -> {after}")
+        check("无残留 .tmp",
+              not [f for f in os.listdir(tmp) if f.endswith(".tmp")])
+
+        g2, s2 = SaveFile(gd), SaveFile(sd)
+        check("金币回读", g2.get_money() == 8888 and s2.get_money() == 8888)
+        check("道具回读", dict(s2.get_owned_items()).get(0) == 7)
+        check("GameData 与 SlotData 背包区一致",
+              g2.get_items(K.ITEMS_COUNT) == s2.get_items(K.ITEMS_COUNT))
+
+        print("\n非法文件")
+        bad = os.path.join(tmp, "GameData_truncated.dat")
+        with open(bad, "wb") as f:
+            f.write(b"\x00" * 1000)
+        try:
+            SaveFile(bad)
+            check("截断文件被拒绝", False)
+        except SaveError:
+            check("截断文件被拒绝", True)
+
+        # 回归用例（含真实存档；真实存档只复制到临时目录，结束时整体删除）
+        _test_a1(tmp)
+        _test_a2(tmp)
+        _test_a4(tmp)
+        _test_a6(tmp)
+        _test_a7(tmp)
+        _test_a8(tmp)
+        _test_a9(tmp)
+        _test_a10(tmp)
+        _test_a11(tmp)
+        _test_a12(tmp)
+        _test_a13(tmp)
+        _test_a14(tmp)
+        _test_a15(tmp)
+        _test_a16(tmp)
+        _test_a17(tmp)
+        _test_a18(tmp)
+    finally:
+        # 不留真实存档副本，也不留测试临时文件
+        shutil.rmtree(tmp, ignore_errors=True)
 
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     return 0 if FAIL == 0 else 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

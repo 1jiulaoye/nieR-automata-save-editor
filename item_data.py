@@ -3,6 +3,7 @@ NieR Automata 道具 / 武器 ID 名称映射表（中文版）
 
 数据来源：
   - MysteryDash/NieR.Automata.Editor 的 Item.cs / Weapon.cs（社区实测：221 道具 + 39 武器）
+  - 武器有独立存档表，因此单独放在 WEAPON_NAMES，不进入道具下拉框
   - CensoredUsername/Nier-Automata-editor 的 ADDRESS.md（存档结构）
   - 中文名为社区通行译名（本作无官方中文，以日文/英文原名为准）
 
@@ -10,7 +11,7 @@ ID 为存档内 2 字节小端整数（道具记录偏移 +0x00）。
 """
 
 # =============================================================================
-# 道具 + 武器总表（260 条）
+# 道具总表（221 条，不含武器）
 # =============================================================================
 
 ITEM_NAMES: dict[int, str] = {
@@ -244,7 +245,16 @@ ITEM_NAMES: dict[int, str] = {
     0x03E5: "阀门：左眼",
     0x03E6: "阀门：右眼",
     0x03E7: "阀门：双眼",
-    # ── 武器 · 小型剑 ──
+
+}
+
+# =============================================================================
+# 武器独立表（39 把，不再混在 ITEM_NAMES / 道具下拉框里）
+# 存档武器表：0x31D70，39 条 × 20B，id == -1 为空槽
+# =============================================================================
+
+WEAPON_NAMES: dict[int, str] = {
+    # ── 小型剑 ──
     0x03EB: "信仰",
     0x03F5: "铁管",
     0x03FC: "兽戮",
@@ -256,7 +266,7 @@ ITEM_NAMES: dict[int, str] = {
     0x042F: "黑之誓约",
     0x0438: "寄叶制式刀",
     0x0442: "机械剑",
-    # ── 武器 · 大型剑 ──
+    # ── 大型剑 ──
     0x04B3: "铁心",
     0x04BD: "双子之牙",
     0x04C4: "兽王",
@@ -266,7 +276,7 @@ ITEM_NAMES: dict[int, str] = {
     0x04EC: "白之约定",
     0x04ED: "黑之血誓",
     0x04F6: "机械斧",
-    # ── 武器 · 长枪 ──
+    # ── 长枪 ──
     0x0578: "凤凰长枪",
     0x058C: "兽咒",
     0x0596: "龙骑兵长枪",
@@ -276,7 +286,7 @@ ITEM_NAMES: dict[int, str] = {
     0x05BE: "白之尊严",
     0x05BF: "黑之傲慢",
     0x05C8: "机械枪",
-    # ── 武器 · 格斗 ──
+    # ── 格斗 ──
     0x0640: "3式拳套",
     0x064A: "40式拳套",
     0x0654: "白之悲叹",
@@ -284,7 +294,7 @@ ITEM_NAMES: dict[int, str] = {
     0x065E: "恶魔之哭",
     0x0668: "天使之愚",
     0x0672: "机械拳",
-    # ── 武器 · 特殊 ──
+    # ── 特殊 ──
     0x0753: "引擎剑",
     0x0754: "柏木棒",
     0x0755: "埃米尔之头",
@@ -307,26 +317,12 @@ CATEGORY_RANGES: tuple[tuple[str, int, int], ...] = (
     ("关键道具", 0x0334, 0x034D),
     ("收藏品", 0x0352, 0x03A8),
     ("外观", 0x03B6, 0x03E7),
-    ("武器·小型剑", 0x03EB, 0x0442),
-    ("武器·大型剑", 0x04B3, 0x04F6),
-    ("武器·长枪", 0x0578, 0x05C8),
-    ("武器·格斗", 0x0640, 0x0672),
-    ("武器·特殊", 0x0753, 0x0755),
 )
 
 # 落在区间外、需要单独归类的
 EXTRA_CATEGORY: dict[int, str] = {
     0x00AA: "关键道具",
 }
-
-# 武器 ID 区间（武器没有堆叠数量概念）
-WEAPON_RANGES: tuple[tuple[int, int], ...] = (
-    (0x03EB, 0x0442),
-    (0x04B3, 0x04F6),
-    (0x0578, 0x05C8),
-    (0x0640, 0x0672),
-    (0x0753, 0x0755),
-)
 
 # UI 下拉框顺序（固定，避免排序抖动）
 CATEGORY_ORDER: tuple[str, ...] = tuple(name for name, _, _ in CATEGORY_RANGES)
@@ -350,9 +346,14 @@ def get_category(item_id: int) -> str:
     return "其他"
 
 
+def get_weapon_name(weapon_id: int) -> str:
+    """获取武器名称（独立武器表）。"""
+    return WEAPON_NAMES.get(weapon_id, f"未知武器 (0x{weapon_id:04X})")
+
+
 def is_weapon(item_id: int) -> bool:
-    """是否武器"""
-    return any(start <= item_id <= end for start, end in WEAPON_RANGES)
+    """是否属于独立武器表（兼容旧调用；道具表本身已不含武器）。"""
+    return item_id in WEAPON_NAMES
 
 
 def search_items(query: str) -> list[tuple[int, str]]:

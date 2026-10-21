@@ -12,6 +12,7 @@ import shutil
 import struct
 from datetime import datetime
 from constants import *
+from item_data import WEAPON_NAMES, get_weapon_name
 
 
 class SaveError(Exception):
@@ -300,7 +301,7 @@ class SaveFile:
 
     # 不同文件类型需要的最小大小（小于它就说明不是有效存档，宁可拒绝也不要猜）
     _MIN_SAFE_SIZE: int = OFFSET_ITEMS_END + 4  # 0x61173 = 397,683 (GameData)
-    _SLOT_SAFE_SIZE: int = OFFSET_CHIPS_START + MAX_CHIPS * CHIP_RECORD_SIZE  # 0x384D4 = 230,588
+    _SLOT_SAFE_SIZE: int = CHIPS_END  # 0x354BC = 218,300（256 条芯片）
 
     def __init__(self, filepath: str):
         self.filepath = filepath
@@ -342,20 +343,21 @@ class SaveFile:
         struct.pack_into('<I', self._data, OFFSET_MONEY, amount)
         self._modified = True
 
-    # ======================== 道具 ========================
+    # ======================== 背包道具 ========================
 
     def _max_items(self) -> int:
-        """当前文件实际能容纳的道具记录数（SlotData 只有 512 条，再往后是芯片区）"""
+        """当前文件实际能容纳的背包记录数；权威上限固定为 256。"""
         usable = max(0, (len(self._data) - OFFSET_ITEMS_START) // ITEM_RECORD_SIZE)
-        cap = MAX_ITEMS
-        if os.path.basename(self.filepath).lower().startswith('slotdata'):
-            cap = min(cap, SLOT_MAX_ITEMS)
-        return min(cap, usable)
+        return min(ITEMS_COUNT, usable)
 
-    def get_items(self, limit: int = MAX_ITEMS) -> list[tuple[int, int]]:
-        """返回所有道具: [(item_id, amount), ...] (最多 limit 条)"""
+    def get_items(self, limit: int = ITEMS_COUNT) -> list[tuple[int, int]]:
+        """返回背包 256 条记录: [(item_id, amount), ...]。
+
+        只读 0x30570..0x31170 的背包区；0x31170 起的尸体背包必须用
+        get_corpse_items() 单独读取，绝不混进这里。
+        """
         items = []
-        count = min(limit, self._max_items())
+        count = min(max(0, limit), ITEMS_COUNT, self._max_items())
         for i in range(count):
             offset = OFFSET_ITEMS_START + i * ITEM_RECORD_SIZE
             item_id = struct.unpack_from('<H', self._data, offset)[0]
@@ -364,7 +366,7 @@ class SaveFile:
         return items
 
     def get_owned_items(self) -> list[tuple[int, int]]:
-        """只返回数量 > 0 的道具。
+        """只返回背包里数量 > 0 的道具。
 
         注意：item_id == 0 是小恢复药，是合法道具，不能按 0 过滤；
         空槽位的判定只认 0xFFFF 或数量 0。
@@ -373,7 +375,7 @@ class SaveFile:
                 if amt > 0 and iid != ITEM_EMPTY_ID]
 
     def get_item(self, item_id: int) -> int:
-        """查找指定道具的数量（第一个匹配），找不到返回0"""
+        """查找背包中指定道具的数量（第一个匹配），找不到返回 0。"""
         for i in range(self._max_items()):
             offset = OFFSET_ITEMS_START + i * ITEM_RECORD_SIZE
             sid = struct.unpack_from('<H', self._data, offset)[0]
@@ -382,7 +384,7 @@ class SaveFile:
         return 0
 
     def set_item(self, index: int, item_id: int, amount: int):
-        """写入指定位置的道具；index 必须在当前文件实际容量内。"""
+        """写入背包指定位置；index 越界（含负数）抛 IndexError。"""
         if not (0 <= amount <= MAX_ITEM_AMOUNT):
             raise ValueError(f"Amount must be 0-{MAX_ITEM_AMOUNT}")
         max_items = self._max_items()
@@ -399,12 +401,15 @@ class SaveFile:
         self._data[offset + 9:offset + 12] = b'\x00' * 3
         self._modified = True
 
-    def add_or_update_item(self, item_id: int, amount: int = 1, limit: int = MAX_ITEMS) -> bool:
-        """添加道具（找到已有条目则增加数量，否则写入空槽）。limit 限制搜索范围。
+    def add_or_update_item(self, item_id: int, amount: int = 1,
+                           limit: int = ITEMS_COUNT) -> bool:
+        """添加背包道具（已有则增加数量，否则写空槽）。limit 限制搜索范围。
+
+        只搜索背包 256 条；尸体背包 / 武器表 / 芯片表绝不会被写入。
 
         返回值约定：
         - True：本次确实写入了新道具，或把已有道具的数量增加了至少 1；
-        - False：道具已存在且数量已经是 255（本次没有增加）；
+        - False：道具已存在且数量已经是 255，或 256 条背包已无空位；
         - item_id / amount 非法时抛 ValueError（不写入任何数据）：
           item_id 必须为 0..0xFFFE（0xFFFF 是空槽标记，不允许写入），
           amount 必须为 1..255。
@@ -416,8 +421,8 @@ class SaveFile:
             )
         if not isinstance(amount, int) or not (1 <= amount <= MAX_ITEM_AMOUNT):
             raise ValueError(f"Amount must be 1-{MAX_ITEM_AMOUNT}, got {amount!r}")
-        # 同时受调用方 limit 与文件实际容量限制，避免 set_item 越界写进芯片区
-        max_search = min(limit, self._max_items())
+        # 同时受调用方 limit、权威 256 条上限与文件实际容量限制。
+        max_search = min(max(0, limit), ITEMS_COUNT, self._max_items())
         # 先找已有条目
         for i in range(max_search):
             offset = OFFSET_ITEMS_START + i * ITEM_RECORD_SIZE
@@ -444,24 +449,130 @@ class SaveFile:
                 return True
         return False  # 没空位了
 
+    # ======================== 尸体背包（只读） ========================
+
+    def _max_corpse_items(self) -> int:
+        usable = max(0, (len(self._data) - CORPSE_ITEMS_START) // ITEM_RECORD_SIZE)
+        return min(CORPSE_ITEMS_COUNT, usable)
+
+    def get_corpse_items(self) -> list[tuple[int, int]]:
+        """返回尸体背包 256 条记录: [(item_id, amount), ...]（只读）。
+
+        这是 0x31170..0x31D70 的独立区域，只用于展示；没有任何写入 API，
+        也不会被 add_or_update_item() / sync_money_items_from() 触碰。
+        """
+        items = []
+        for i in range(self._max_corpse_items()):
+            offset = CORPSE_ITEMS_START + i * ITEM_RECORD_SIZE
+            item_id = struct.unpack_from('<H', self._data, offset)[0]
+            amount = self._data[offset + 8]
+            items.append((item_id, amount))
+        return items
+
+    def get_owned_corpse_items(self) -> list[tuple[int, int]]:
+        """只返回尸体背包里数量 > 0 的记录（只读展示用）。"""
+        return [(iid, amt) for iid, amt in self.get_corpse_items()
+                if amt > 0 and iid != ITEM_EMPTY_ID]
+
+    # ======================== 武器表 ========================
+
+    def _max_weapons(self) -> int:
+        usable = max(0, (len(self._data) - WEAPONS_START) // WEAPON_RECORD_SIZE)
+        return min(WEAPONS_COUNT, usable)
+
+    @staticmethod
+    def _weapon_is_empty(weapon_id: int) -> bool:
+        """武器空槽。
+
+        权威标记是 id == -1（整条 0xFFFFFFFF）。GameData 的武器区可能是
+        全 0 占位而非 39 把武器之一，这种未知 id 也按空槽展示，避免把
+        占位数据误报成「已获得」；写入时 add_weapon 仍只找 id == -1。
+        """
+        return weapon_id == -1 or weapon_id not in WEAPON_NAMES
+
+    def _read_weapon(self, index: int) -> tuple[int, int, int, int, int]:
+        offset = WEAPONS_START + index * WEAPON_RECORD_SIZE
+        return struct.unpack_from('<5i', self._data, offset)
+
+    def get_weapons(self) -> list[dict]:
+        """返回武器表 39 条记录（含空槽），不修改任何数据。"""
+        weapons = []
+        for i in range(self._max_weapons()):
+            wid, level, new_item, new_story, enemies = self._read_weapon(i)
+            empty = self._weapon_is_empty(wid)
+            weapons.append({
+                'index': i,
+                'id': wid,
+                'name': '（空槽）' if wid == -1 else get_weapon_name(wid),
+                'level': level,
+                'new_item': new_item,
+                'new_story': new_story,
+                'enemies_defeated': enemies,
+                'empty': empty,
+            })
+        return weapons
+
+    def set_weapon_level(self, index: int, level: int):
+        """只改指定武器记录的第 2 个 int32（等级）；等级限制 1..4。"""
+        if not (0 <= index < self._max_weapons()):
+            raise IndexError(
+                f"Weapon index must be 0-{self._max_weapons() - 1} for "
+                f"{os.path.basename(self.filepath)}, got {index}"
+            )
+        if not isinstance(level, int) or not (WEAPON_LEVEL_MIN <= level <= WEAPON_LEVEL_MAX):
+            raise ValueError(
+                f"Weapon level must be {WEAPON_LEVEL_MIN}-{WEAPON_LEVEL_MAX}, got {level!r}"
+            )
+        wid = self._read_weapon(index)[0]
+        if self._weapon_is_empty(wid):
+            raise ValueError(f"不能修改空武器槽的等级：index={index}")
+        offset = WEAPONS_START + index * WEAPON_RECORD_SIZE
+        struct.pack_into('<i', self._data, offset + 4, level)
+        self._modified = True
+
+    def add_weapon(self, weapon_id: int) -> bool:
+        """把武器写到第一个 id == -1 的槽：level=1,new_item=1,new_story=1,enemies=0。"""
+        if not isinstance(weapon_id, int) or weapon_id not in WEAPON_NAMES:
+            raise ValueError(f"未知武器 ID: {weapon_id!r}")
+        for i in range(self._max_weapons()):
+            if self._read_weapon(i)[0] == -1:
+                offset = WEAPONS_START + i * WEAPON_RECORD_SIZE
+                struct.pack_into('<5i', self._data, offset,
+                                 weapon_id, 1, 1, 1, 0)
+                self._modified = True
+                return True
+        return False  # 39 个槽都被占用
+
+    def remove_weapon(self, index: int):
+        """删除指定武器：整条 20 字节写 0xFFFFFFFF。"""
+        if not (0 <= index < self._max_weapons()):
+            raise IndexError(
+                f"Weapon index must be 0-{self._max_weapons() - 1} for "
+                f"{os.path.basename(self.filepath)}, got {index}"
+            )
+        offset = WEAPONS_START + index * WEAPON_RECORD_SIZE
+        self._data[offset:offset + WEAPON_RECORD_SIZE] = b'\xff' * WEAPON_RECORD_SIZE
+        self._modified = True
+
     # ======================== 跨文件同步 ========================
 
     def sync_money_items_from(self, source: 'SaveFile'):
+        """从源存档同步金币 + 背包 256 条道具到本存档。
+
+        只复制 0x3056C..0x31170（金币 4B + 背包 256×12B）；
+        尸体背包、武器表、芯片表一律不碰，文件长度也不变。
         """
-        从源存档同步金币+道具数据到本存档。
-        金币和道具存储在相同偏移处，但 SlotData 只存 512 条（SLOT_MAX_ITEMS）。
-        """
-        items_size = SLOT_MAX_ITEMS * ITEM_RECORD_SIZE  # 6,144 字节
-        end_offset = OFFSET_ITEMS_START + items_size  # 0x31D70
+        items_size = ITEMS_COUNT * ITEM_RECORD_SIZE  # 3,072 字节
+        end_offset = OFFSET_ITEMS_START + items_size  # 0x31170
 
         # 边界检查
         source._check_bounds(OFFSET_MONEY, 4, "同步金币源数据")
-        source._check_bounds(OFFSET_ITEMS_START, items_size, "同步道具源数据")
+        source._check_bounds(OFFSET_ITEMS_START, items_size, "同步背包道具源数据")
 
-        # 目标文件必须原本就容纳完整金币+道具区；绝不扩容（保持文件长度不变量）
+        # 目标文件必须原本就容纳完整金币+背包区；绝不扩容（保持文件长度不变量）
         if len(self._data) < end_offset:
             raise SaveError(
-                f"{os.path.basename(self.filepath)} 长度不足：同步金币/道具需要至少 "
+                f"{os.path.basename(self.filepath)} 长度不足：同步金币/背包道具需要至少 "
                 f"{end_offset:,} 字节，当前只有 {len(self._data):,} 字节；"
                 f"已拒绝同步，文件未被修改。"
             )
@@ -469,7 +580,7 @@ class SaveFile:
         # 复制金币 (4 字节)
         self._data[OFFSET_MONEY:OFFSET_MONEY + 4] = source._data[OFFSET_MONEY:OFFSET_MONEY + 4]
 
-        # 复制道具区 (512 条 × 12 字节)
+        # 只复制背包 256 条 × 12 字节，止于 0x31170
         self._data[OFFSET_ITEMS_START:end_offset] = source._data[OFFSET_ITEMS_START:end_offset]
 
         self._modified = True
@@ -497,12 +608,12 @@ class SaveFile:
         return False
 
     def _max_chips(self) -> int:
-        """当前文件实际能容纳的芯片记录数"""
+        """当前文件实际能容纳的芯片记录数；权威上限固定为 256。"""
         usable = max(0, (len(self._data) - OFFSET_CHIPS_START) // CHIP_RECORD_SIZE)
-        return min(MAX_CHIPS, usable)
+        return min(CHIPS_COUNT, usable)
 
     def get_chips(self) -> list[dict]:
-        """返回所有芯片记录（含空槽）"""
+        """返回芯片表最多 256 条记录（含空槽），不再读取后面的其它数据。"""
         chips = []
         for i in range(self._max_chips()):
             offset = OFFSET_CHIPS_START + i * CHIP_RECORD_SIZE
@@ -542,17 +653,25 @@ class SaveFile:
         return False
 
     def remove_chip(self, index: int):
-        """删除指定位置的芯片（写空记录：全部 0xFF，判空与 add_chip 一致）"""
-        if not (0 <= index < MAX_CHIPS):
-            raise IndexError(f"Chip index must be 0-{MAX_CHIPS-1}")
+        """删除指定位置的芯片（写空记录：全部 0xFF，判空与 add_chip 一致）。"""
+        max_chips = self._max_chips()
+        if not (0 <= index < max_chips):
+            raise IndexError(
+                f"Chip index must be 0-{max_chips - 1} for "
+                f"{os.path.basename(self.filepath)}, got {index}"
+            )
         offset = OFFSET_CHIPS_START + index * CHIP_RECORD_SIZE
         self._data[offset:offset + CHIP_RECORD_SIZE] = b'\xff' * CHIP_RECORD_SIZE
         self._modified = True
 
     def set_chip(self, index: int, chip_bytes: bytes):
-        """替换指定位置的芯片"""
-        if not (0 <= index < MAX_CHIPS):
-            raise IndexError(f"Chip index must be 0-{MAX_CHIPS-1}")
+        """替换指定位置的芯片。"""
+        max_chips = self._max_chips()
+        if not (0 <= index < max_chips):
+            raise IndexError(
+                f"Chip index must be 0-{max_chips - 1} for "
+                f"{os.path.basename(self.filepath)}, got {index}"
+            )
         if len(chip_bytes) != CHIP_RECORD_SIZE:
             raise ValueError(f"Chip data must be {CHIP_RECORD_SIZE} bytes")
         offset = OFFSET_CHIPS_START + index * CHIP_RECORD_SIZE

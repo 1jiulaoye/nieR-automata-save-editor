@@ -1,7 +1,7 @@
 """
 小柒 尼尔机械纪元 存档修改器
 GUI 主界面 — ttkbootstrap 暗色主题
-支持：金币修改 / 道具管理 / 芯片管理
+支持：金币修改 / 背包道具管理 / 武器管理 / 芯片管理
 """
 
 import os
@@ -19,7 +19,10 @@ from save_io import (
     SaveFile, SaveError, new_operation_id, find_backup_pairs,
     replace_files_atomically,
 )
-from item_data import ITEM_NAMES, CATEGORY_ORDER, get_item_name, get_category, is_weapon
+from item_data import (
+    ITEM_NAMES, WEAPON_NAMES, CATEGORY_ORDER,
+    get_item_name, get_weapon_name, get_category,
+)
 from chip_data import REGISTRY as CHIPS
 from chip_data import CHIP_EFFECTS, CHIP_RECORD_SIZE
 
@@ -39,7 +42,8 @@ class NierSaveEditor:
         self.gamedata: SaveFile | None = None
         self.slotdata: SaveFile | None = None
         self._loaded_slot = 0  # 当前加载的存档位
-        self._money_items_dirty = False  # 金币/道具被改过
+        self._money_items_dirty = False  # 金币/背包道具被改过
+        self._weapons_dirty = False      # 武器表被改过
         self._chips_dirty = False        # 芯片被改过
 
         self._build_ui()
@@ -81,7 +85,17 @@ class NierSaveEditor:
         self.notebook.add(self.item_tab, text="🧪 道具")
         self._build_item_tab()
 
-        # Tab 3: 芯片
+        # Tab 3: 武器（独立 39 条武器表）
+        self.weapon_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(self.weapon_tab, text="⚔ 武器")
+        self._build_weapon_tab()
+
+        # Tab 4: 尸体背包（只读，独立区域，不参与写入）
+        self.corpse_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(self.corpse_tab, text="💀 尸体背包（只读）")
+        self._build_corpse_tab()
+
+        # Tab 5: 芯片
         self.chip_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.chip_tab, text="🔧 芯片")
         self._build_chip_tab()
@@ -183,6 +197,88 @@ class NierSaveEditor:
         self.item_add_cb.pack(side=LEFT, padx=5)
         ttk.Button(add_frame, text="添加", bootstyle=SUCCESS,
                    command=self._add_item).pack(side=LEFT, padx=5)
+
+    # ======================== 武器 Tab ========================
+
+    def _build_weapon_tab(self):
+        ttk.Label(
+            self.weapon_tab,
+            text=f"武器表：{WEAPONS_COUNT} 条 × {WEAPON_RECORD_SIZE}B"
+                 f"（0x{WEAPONS_START:X}），id == -1 为空槽",
+            font=("Microsoft YaHei", 9),
+        ).pack(anchor="w", pady=(0, 5))
+
+        cols = ("名称", "等级", "状态", "ID")
+        self.weapon_tree = ttk.Treeview(self.weapon_tab, columns=cols,
+                                        show="headings", height=18)
+        self.weapon_tree.heading("名称", text="名称")
+        self.weapon_tree.heading("等级", text="等级")
+        self.weapon_tree.heading("状态", text="状态")
+        self.weapon_tree.heading("ID", text="ID")
+        self.weapon_tree.column("名称", width=300)
+        self.weapon_tree.column("等级", width=70, anchor=CENTER)
+        self.weapon_tree.column("状态", width=90, anchor=CENTER)
+        self.weapon_tree.column("ID", width=100, anchor=CENTER)
+        self.weapon_tree.pack(fill=BOTH, expand=True, pady=5)
+
+        scrollbar = ttk.Scrollbar(self.weapon_tree, orient=VERTICAL,
+                                  command=self.weapon_tree.yview)
+        self.weapon_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=RIGHT, fill=Y)
+
+        level_frame = ttk.Frame(self.weapon_tab)
+        level_frame.pack(fill=X, pady=5)
+        ttk.Label(level_frame, text="等级 (1-4):").pack(side=LEFT, padx=5)
+        self.weapon_level_var = tk.IntVar(value=1)
+        self.weapon_level_spin = ttk.Spinbox(
+            level_frame, from_=WEAPON_LEVEL_MIN, to=WEAPON_LEVEL_MAX,
+            textvariable=self.weapon_level_var, width=5,
+        )
+        self.weapon_level_spin.pack(side=LEFT, padx=5)
+        ttk.Button(level_frame, text="✏ 设置等级", bootstyle=INFO,
+                   command=self._set_weapon_level).pack(side=LEFT, padx=3)
+        ttk.Button(level_frame, text="🗑 删除选中", bootstyle=DANGER,
+                   command=self._remove_weapon).pack(side=LEFT, padx=3)
+        self.weapon_count_label = ttk.Label(level_frame, text="0 / 39",
+                                            font=("Microsoft YaHei", 9))
+        self.weapon_count_label.pack(side=RIGHT, padx=5)
+
+        add_frame = ttk.Frame(self.weapon_tab)
+        add_frame.pack(fill=X, pady=5)
+        ttk.Label(add_frame, text="添加武器:").pack(side=LEFT, padx=5)
+        self.weapon_add_var = tk.StringVar()
+        weapon_names = [f"{n} (0x{i:04X})"
+                        for i, n in sorted(WEAPON_NAMES.items(), key=lambda x: x[1])]
+        self.weapon_add_cb = ttk.Combobox(
+            add_frame, textvariable=self.weapon_add_var,
+            values=weapon_names, width=35, state="readonly",
+        )
+        self.weapon_add_cb.pack(side=LEFT, padx=5)
+        ttk.Button(add_frame, text="添加", bootstyle=SUCCESS,
+                   command=self._add_weapon).pack(side=LEFT, padx=5)
+
+    # ======================== 尸体背包 Tab（只读） ========================
+
+    def _build_corpse_tab(self):
+        ttk.Label(
+            self.corpse_tab,
+            text=f"尸体背包：{CORPSE_ITEMS_COUNT} 条 × {ITEM_RECORD_SIZE}B"
+                 f"（0x{CORPSE_ITEMS_START:X}），独立区域，只读展示，不参与保存",
+            font=("Microsoft YaHei", 9),
+        ).pack(anchor="w", pady=(0, 5))
+        cols = ("名称", "数量", "ID")
+        self.corpse_tree = ttk.Treeview(self.corpse_tab, columns=cols,
+                                        show="headings", height=18)
+        self.corpse_tree.heading("名称", text="名称")
+        self.corpse_tree.heading("数量", text="数量")
+        self.corpse_tree.heading("ID", text="ID")
+        self.corpse_tree.column("名称", width=300)
+        self.corpse_tree.column("数量", width=80, anchor=CENTER)
+        self.corpse_tree.column("ID", width=100, anchor=CENTER)
+        self.corpse_tree.pack(fill=BOTH, expand=True, pady=5)
+        self.corpse_count_label = ttk.Label(self.corpse_tab, text="0 条",
+                                            font=("Microsoft YaHei", 9))
+        self.corpse_count_label.pack(anchor="e")
 
     # ======================== 芯片 Tab ========================
 
@@ -318,7 +414,7 @@ class NierSaveEditor:
         new_slot = self.cur_slot.get()
         # 检查未保存修改
         discard = False
-        if self._money_items_dirty or self._chips_dirty:
+        if self._money_items_dirty or self._weapons_dirty or self._chips_dirty:
             if not messagebox.askyesno("未保存的修改", "当前有未保存的修改，切换存档位将丢失。\n继续吗？"):
                 self.cur_slot.set(self._loaded_slot)
                 return
@@ -341,6 +437,7 @@ class NierSaveEditor:
                 )
                 return
             self._money_items_dirty = False
+            self._weapons_dirty = False
             self._chips_dirty = False
 
         slot_file = SLOT_FILES[new_slot]
@@ -354,9 +451,12 @@ class NierSaveEditor:
                 messagebox.showwarning("存档位无效", str(e))
         self._loaded_slot = new_slot
         self._money_items_dirty = False
+        self._weapons_dirty = False
         self._chips_dirty = False
         self._refresh_money()
         self._refresh_items()
+        self._refresh_weapons()
+        self._refresh_corpse()
         self._refresh_chips()
 
     # ======================== 金币操作 ========================
@@ -394,7 +494,7 @@ class NierSaveEditor:
 
     def _refresh_items(self):
         try:
-            # 优先从 SlotData 读取（游戏实际读这个），限制 512 条
+            # 优先从 SlotData 读取（游戏实际读这个），只读背包 256 条
             target = self.slotdata if self.slotdata else self.gamedata
             if not target:
                 return
@@ -405,7 +505,7 @@ class NierSaveEditor:
             category = self.item_cat_var.get()
             show_all = self.show_all_var.get()
 
-            all_items = target.get_items(limit=SLOT_MAX_ITEMS)
+            all_items = target.get_items(limit=ITEMS_COUNT)
             for i, (iid, amt) in enumerate(all_items):
                 if amt == 0 and not show_all:
                     continue
@@ -415,9 +515,7 @@ class NierSaveEditor:
                 if category != "全部" and get_category(iid) != category:
                     continue
                 # tags=(str(i),) 存储原始索引，避免重复 item_id 导致改错
-                # A12：武器不可堆叠，列表里数量固定显示 1
-                display_amt = 1 if is_weapon(iid) else amt
-                self.item_tree.insert("", END, values=(name, display_amt, f"0x{iid:04X}"),
+                self.item_tree.insert("", END, values=(name, amt, f"0x{iid:04X}"),
                                       tags=(str(i),))
         except Exception as e:
             self.status_var.set(f"道具读取异常: {e}")
@@ -455,22 +553,17 @@ class NierSaveEditor:
             messagebox.showwarning("输入错误", f"数量必须是 1-{MAX_ITEM_AMOUNT} 的整数")
             return
 
-        # A12：武器不可堆叠，增/减/设数量都强制为 1（但先完成上面的输入校验）
-        if is_weapon(iid):
-            new_amt = 1
-            messagebox.showwarning("武器不可堆叠", "武器数量固定为 1，已按 1 处理")
-        elif direction == 1:
+        if direction == 1:
             new_amt = min(cur + amt_val, MAX_ITEM_AMOUNT)
         elif direction == -1:
             new_amt = max(cur - amt_val, 0)
         else:
             new_amt = min(max(amt_val, 0), MAX_ITEM_AMOUNT)
 
-        # 同时写 GameData 和 SlotData 保持一致；任何异常都转成提示，不能逃出 Tk 回调
+        # 同时写 GameData 和 SlotData 的背包区；任何异常都转成提示，不能逃出 Tk 回调
         try:
             self.gamedata.set_item(idx, iid, new_amt)
-            if idx < SLOT_MAX_ITEMS:
-                self.slotdata.set_item(idx, iid, new_amt)
+            self.slotdata.set_item(idx, iid, new_amt)
         except Exception as e:
             messagebox.showerror("修改失败", f"写入道具失败：{e}")
             return
@@ -496,15 +589,8 @@ class NierSaveEditor:
             messagebox.showwarning("未知道具 ID", f"未知道具 ID: 0x{iid:04X}")
             return
 
-        # A12：武器不可堆叠；已经拥有时保持 1，不重复累加
-        amount = 1
-        if is_weapon(iid):
-            if self.slotdata.get_item(iid) > 0:
-                messagebox.showwarning("武器不可堆叠", "该武器已经拥有，数量固定为 1")
-                return
-
-        # 以 SlotData 为权威添加，再同步到 GameData
-        added = self.slotdata.add_or_update_item(iid, amount, limit=SLOT_MAX_ITEMS)
+        # 以 SlotData 为权威添加背包道具，再同步到 GameData
+        added = self.slotdata.add_or_update_item(iid, 1, limit=ITEMS_COUNT)
         if not added:
             if self.slotdata.get_item(iid) >= MAX_ITEM_AMOUNT:
                 messagebox.showwarning("数量已满", "该道具数量已满（255），无法继续增加")
@@ -516,6 +602,145 @@ class NierSaveEditor:
         self._money_items_dirty = True
         self._refresh_items()
         self.status_var.set(f"已添加 {get_item_name(iid)}（未保存）")
+
+    # ======================== 武器操作 ========================
+
+    def _weapon_target(self):
+        """武器表优先从 SlotData 读写（GameData 的武器区只是占位）。"""
+        return self.slotdata if self.slotdata else self.gamedata
+
+    def _refresh_weapons(self):
+        try:
+            target = self._weapon_target()
+            if not target:
+                for row in self.weapon_tree.get_children():
+                    self.weapon_tree.delete(row)
+                return
+            for row in self.weapon_tree.get_children():
+                self.weapon_tree.delete(row)
+            obtained = 0
+            for w in target.get_weapons():
+                if w['empty']:
+                    name = "（空槽）"
+                    level_text = "—"
+                    status = "未获得"
+                    id_text = ""
+                else:
+                    obtained += 1
+                    name = w['name']
+                    level_text = w['level']
+                    status = "已获得"
+                    id_text = f"0x{w['id']:04X}"
+                self.weapon_tree.insert(
+                    "", END, values=(name, level_text, status, id_text),
+                    tags=(str(w['index']),),
+                )
+            self.weapon_count_label.config(
+                text=f"{obtained} / {WEAPONS_COUNT}"
+            )
+        except Exception as e:
+            self.status_var.set(f"武器读取异常: {e}")
+
+    def _refresh_corpse(self):
+        """只读展示 0x31170 起的尸体背包，绝不写入。"""
+        try:
+            target = self.slotdata if self.slotdata else self.gamedata
+            if not target:
+                for row in self.corpse_tree.get_children():
+                    self.corpse_tree.delete(row)
+                return
+            for row in self.corpse_tree.get_children():
+                self.corpse_tree.delete(row)
+            count = 0
+            for i, (iid, amt) in enumerate(target.get_corpse_items()):
+                if amt <= 0 or iid == ITEM_EMPTY_ID:
+                    continue
+                count += 1
+                self.corpse_tree.insert(
+                    "", END,
+                    values=(get_item_name(iid), amt, f"0x{iid:04X}"),
+                    tags=(str(i),),
+                )
+            self.corpse_count_label.config(text=f"{count} 条")
+        except Exception as e:
+            self.status_var.set(f"尸体背包读取异常: {e}")
+
+    def _get_selected_weapon_index(self) -> int:
+        sel = self.weapon_tree.selection()
+        if not sel:
+            return -1
+        tags = self.weapon_tree.item(sel[0], 'tags')
+        return int(tags[0]) if tags else -1
+
+    def _set_weapon_level(self):
+        target = self._weapon_target()
+        if not target:
+            return
+        idx = self._get_selected_weapon_index()
+        if idx < 0:
+            messagebox.showwarning("未选中", "请先选择一把武器")
+            return
+        try:
+            level = int(self.weapon_level_var.get())
+        except (ValueError, TypeError):
+            messagebox.showwarning("输入错误", "武器等级必须是 1-4 的整数")
+            return
+        if not (WEAPON_LEVEL_MIN <= level <= WEAPON_LEVEL_MAX):
+            messagebox.showwarning("输入错误", "武器等级必须是 1-4 的整数")
+            return
+        try:
+            target.set_weapon_level(idx, level)
+        except Exception as e:
+            messagebox.showerror("修改失败", f"写入武器等级失败：{e}")
+            return
+        self._weapons_dirty = True
+        self._refresh_weapons()
+        self.status_var.set(f"武器等级 → {level}（未保存）")
+
+    def _add_weapon(self):
+        target = self._weapon_target()
+        if not target:
+            return
+        sel = self.weapon_add_var.get()
+        if not sel:
+            return
+        import re
+        m = re.search(r'0x([0-9A-Fa-f]+)', sel)
+        if not m:
+            messagebox.showwarning("未知武器 ID", "请从下拉框选择有效武器")
+            return
+        wid = int(m.group(1), 16)
+        if wid not in WEAPON_NAMES:
+            messagebox.showwarning("未知武器 ID", f"未知武器 ID: 0x{wid:04X}")
+            return
+        if any((not w['empty']) and w['id'] == wid for w in target.get_weapons()):
+            messagebox.showwarning("武器已拥有", "该武器已经拥有，不能重复添加")
+            return
+        if target.add_weapon(wid):
+            self._weapons_dirty = True
+            self._refresh_weapons()
+            self.status_var.set(f"已添加武器 {get_weapon_name(wid)}（未保存）")
+        else:
+            messagebox.showwarning("武器槽已满", "39 个武器槽已满，无法添加")
+
+    def _remove_weapon(self):
+        target = self._weapon_target()
+        if not target:
+            return
+        idx = self._get_selected_weapon_index()
+        if idx < 0:
+            messagebox.showwarning("未选中", "请先选择一把武器")
+            return
+        if not messagebox.askyesno("确认删除", "确定要删除这把武器吗？"):
+            return
+        try:
+            target.remove_weapon(idx)
+        except Exception as e:
+            messagebox.showerror("删除失败", f"删除武器失败：{e}")
+            return
+        self._weapons_dirty = True
+        self._refresh_weapons()
+        self.status_var.set("武器已删除（未保存）")
 
     # ======================== 芯片操作 ========================
 
@@ -569,7 +794,7 @@ class NierSaveEditor:
                 self.chip_tree.insert("", END, values=(name, lv_str, chip['size'], effect),
                                      tags=(str(chip['index']),))
             count = len(installed)
-            self.chip_count_label.config(text=f"{count} / {MAX_CHIPS}")
+            self.chip_count_label.config(text=f"{count} / {CHIPS_COUNT}")
         except Exception as e:
             self.status_var.set(f"芯片读取异常: {e}")
 
@@ -643,7 +868,9 @@ class NierSaveEditor:
         if not self.slotdata:
             messagebox.showwarning("无存档位", "请先选择一个存档位")
             return
-        if not self._money_items_dirty and not self._chips_dirty and not self.gamedata.modified and not self.slotdata.modified:
+        if (not self._money_items_dirty and not self._weapons_dirty
+                and not self._chips_dirty
+                and not self.gamedata.modified and not self.slotdata.modified):
             messagebox.showinfo("无需保存", "没有检测到任何修改。")
             return
         if not messagebox.askyesno("确认保存", "保存前将自动备份原存档。\n确定要写入修改吗？"):
@@ -718,6 +945,7 @@ class NierSaveEditor:
         self.status_var.set(f"已保存 {slot_file} ✓")
         # 重置脏标记
         self._money_items_dirty = False
+        self._weapons_dirty = False
         self._chips_dirty = False
 
     def _restore_backup(self):
@@ -811,6 +1039,7 @@ class NierSaveEditor:
 
         # 恢复成功后清掉脏标记，再统一重载
         self._money_items_dirty = False
+        self._weapons_dirty = False
         self._chips_dirty = False
         self._refresh()
         self.status_var.set("已从备份恢复 ✓")
