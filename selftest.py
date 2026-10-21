@@ -96,6 +96,9 @@ def _install_gui_stubs() -> None:
         def set(self, value):
             self._value = value
 
+        def trace_add(self, *args, **kwargs):
+            return "trace"
+
     tkmod = types.ModuleType("tkinter")
     tkmod.StringVar = FakeVar
     tkmod.IntVar = FakeVar
@@ -412,6 +415,431 @@ def _test_a7(tmp: str) -> None:
           s.get_items(1)[0] == (0x042E, 1), str(s.get_items(1)[0]))
 
 
+
+class _FakeWidget:
+    """最小 GUI 控件替身：记录构造参数与 state，供 object.__new__ 级测试使用。"""
+
+    def __init__(self, *args, **kwargs):
+        self.kwargs = dict(kwargs)
+        self._state = kwargs.get("state", "normal")
+
+    def pack(self, *args, **kwargs):
+        return self
+
+    def bind(self, *args, **kwargs):
+        return None
+
+    def heading(self, *args, **kwargs):
+        return None
+
+    def column(self, *args, **kwargs):
+        return None
+
+    def configure(self, *args, **kwargs):
+        if "state" in kwargs:
+            self._state = kwargs["state"]
+        self.kwargs.update(kwargs)
+        return None
+
+    config = configure
+
+    def cget(self, key):
+        if key == "state":
+            return self._state
+        return self.kwargs.get(key, "")
+
+    def set(self, *args, **kwargs):
+        return None
+
+    def yview(self, *args, **kwargs):
+        return None
+
+
+class _FakeTree:
+    """只实现 _refresh_items 用到的 Treeview 接口。"""
+
+    def __init__(self):
+        self.rows = []
+        self._seq = 0
+
+    def get_children(self):
+        return [row[0] for row in self.rows]
+
+    def delete(self, row):
+        self.rows = [r for r in self.rows if r[0] != row]
+
+    def insert(self, parent, index, values=(), tags=()):
+        self._seq += 1
+        row_id = f"row{self._seq}"
+        self.rows.append((row_id, tuple(values), tuple(tags)))
+        return row_id
+
+    def configure(self, *args, **kwargs):
+        return None
+
+    def yview(self, *args, **kwargs):
+        return None
+
+
+def _prepare_gui_stubs(nier_editor) -> None:
+    """把 nier_editor 里的 ttkbootstrap 控件替换成可记录的替身（无显示器）。"""
+    for name in ("X", "Y", "BOTH", "LEFT", "RIGHT", "CENTER",
+                 "HORIZONTAL", "VERTICAL", "END",
+                 "SUCCESS", "DANGER", "INFO", "PRIMARY", "SECONDARY", "WARNING"):
+        setattr(nier_editor, name, name.lower())
+    for name in ("Frame", "Label", "Entry", "Combobox", "Checkbutton",
+                 "Button", "Treeview", "Scrollbar", "Spinbox", "Separator",
+                 "Notebook", "Radiobutton"):
+        setattr(nier_editor.ttk, name, _FakeWidget)
+
+
+def _make_editor(nier_editor, gd: str, sd: str):
+    ed = object.__new__(nier_editor.NierSaveEditor)
+    ed.gamedata = SaveFile(gd)
+    ed.slotdata = SaveFile(sd)
+    ed.status_var = nier_editor.tk.StringVar("")
+    ed._money_items_dirty = False
+    ed._chips_dirty = False
+    ed._refresh_money = lambda: None
+    ed._refresh_items = lambda: None
+    ed._refresh_chips = lambda: None
+    ed.item_amount_var = nier_editor.tk.StringVar("1")
+    return ed
+
+
+def _capture_messagebox(nier_editor):
+    msgs = {"warning": [], "info": [], "error": []}
+    nier_editor.messagebox.showwarning = lambda title, msg: msgs["warning"].append((title, msg))
+    nier_editor.messagebox.showinfo = lambda title, msg: msgs["info"].append((title, msg))
+    nier_editor.messagebox.showerror = lambda title, msg: msgs["error"].append((title, msg))
+    return msgs
+
+
+def _test_a8(tmp: str) -> None:
+    """A8：数量输入 1..255 校验、增减结果钳制、set_item 异常不得逃出回调。"""
+    print("\nA8 数量输入校验（GUI 对象级）")
+    d = os.path.join(tmp, "a8")
+    os.makedirs(d)
+    gd, sd = make_saves(d)
+    _install_gui_stubs()
+    import nier_editor
+    _prepare_gui_stubs(nier_editor)
+    msgs = _capture_messagebox(nier_editor)
+
+    ed = _make_editor(nier_editor, gd, sd)
+    iid = 0x0000  # 小恢复药，非武器
+    ed.gamedata.set_item(0, iid, 5)
+    ed.slotdata.set_item(0, iid, 5)
+    ed._get_selected_item_index = lambda: (0, iid, ed.slotdata.get_item(iid))
+
+    uncaught = []
+    for raw in ("-10", "0", "300", "abc"):
+        msgs["warning"].clear()
+        ed.item_amount_var.set(raw)
+        try:
+            ed._mod_item(1)
+        except Exception as e:  # 不允许 Tk 回调抛未捕获异常
+            uncaught.append((raw, repr(e)))
+        check(f"A8 输入 {raw!r} 不写入且弹出提示",
+              ed.slotdata.get_item(iid) == 5
+              and ed.gamedata.get_item(iid) == 5 and bool(msgs["warning"]),
+              f"slot={ed.slotdata.get_item(iid)}, gd={ed.gamedata.get_item(iid)}, "
+              f"warnings={msgs['warning']}")
+    check("A8 四种非法输入均无未捕获异常", not uncaught, str(uncaught))
+
+    # 合法输入：增加钳制 255，减少钳制 0
+    msgs["warning"].clear()
+    ed.gamedata.set_item(0, iid, 250)
+    ed.slotdata.set_item(0, iid, 250)
+    ed.item_amount_var.set("10")
+    ed._mod_item(1)
+    check("A8 增加结果上限 255",
+          ed.gamedata.get_item(iid) == 255 and ed.slotdata.get_item(iid) == 255,
+          f"{ed.slotdata.get_item(iid)}")
+    ed.gamedata.set_item(0, iid, 5)
+    ed.slotdata.set_item(0, iid, 5)
+    ed._mod_item(-1)
+    check("A8 减少结果下限 0",
+          ed.gamedata.get_item(iid) == 0 and ed.slotdata.get_item(iid) == 0,
+          f"{ed.slotdata.get_item(iid)}")
+
+    # set_item 抛异常时必须捕获并 showerror，不得冒泡
+    ed.gamedata.set_item(0, iid, 7)
+    ed.slotdata.set_item(0, iid, 7)
+    msgs["error"].clear()
+    uncaught.clear()
+    ed.item_amount_var.set("2")
+    original = ed.gamedata.set_item
+
+    def boom(*args, **kwargs):
+        raise ValueError("boom-set-item")
+
+    ed.gamedata.set_item = boom
+    try:
+        ed._mod_item(0)
+    except Exception as e:
+        uncaught.append(repr(e))
+    finally:
+        ed.gamedata.set_item = original
+    check("A8 set_item 异常被捕获并提示",
+          not uncaught and bool(msgs["error"])
+          and "boom-set-item" in msgs["error"][-1][1],
+          f"uncaught={uncaught}, errors={msgs['error']}")
+    check("A8 set_item 异常后数量未改变",
+          ed.gamedata.get_item(iid) == 7 and ed.slotdata.get_item(iid) == 7,
+          f"gd={ed.gamedata.get_item(iid)}, slot={ed.slotdata.get_item(iid)}")
+
+
+def _test_a9(tmp: str) -> None:
+    """A9：amount 1..255、拒绝 0xFFFF、已满 255 返回 False。"""
+    print("\nA9 add_or_update_item 校验")
+    d = os.path.join(tmp, "a9")
+    os.makedirs(d)
+    _, sd = make_saves(d)
+    s = SaveFile(sd)
+    iid = 0x0000  # 合法道具，且不是空槽标记
+
+    rejected = []
+    for bad in (0, -1, 256, 1.5):
+        try:
+            s.add_or_update_item(iid, bad, limit=K.SLOT_MAX_ITEMS)
+        except ValueError:
+            rejected.append(bad)
+    check("A9 amount 0/-1/256/1.5 均抛 ValueError",
+          rejected == [0, -1, 256, 1.5], str(rejected))
+    check("A9 非法 amount 未写入任何道具",
+          s.get_items(1)[0] == (K.ITEM_EMPTY_ID, 0), str(s.get_items(1)[0]))
+
+    try:
+        s.add_or_update_item(K.ITEM_EMPTY_ID, 1, limit=K.SLOT_MAX_ITEMS)
+        rejected_empty = False
+    except ValueError:
+        rejected_empty = True
+    check("A9 item_id=0xFFFF 抛 ValueError 且不写空槽",
+          rejected_empty and s.get_items(1)[0] == (K.ITEM_EMPTY_ID, 0),
+          str(s.get_items(1)[0]))
+
+    check("A9 新道具 amount=254 写入成功", s.add_or_update_item(iid, 254, limit=K.SLOT_MAX_ITEMS))
+    check("A9 已到 254 再加 1 返回 True 且变为 255",
+          s.add_or_update_item(iid, 1, limit=K.SLOT_MAX_ITEMS)
+          and s.get_item(iid) == 255, str(s.get_item(iid)))
+    check("A9 已满 255 再加 1 返回 False",
+          s.add_or_update_item(iid, 1, limit=K.SLOT_MAX_ITEMS) is False)
+    check("A9 已满返回 False 后数量仍为 255", s.get_item(iid) == 255, str(s.get_item(iid)))
+    s2 = SaveFile(sd)
+    check("A9 直接写 amount=255 可成功且回读 255",
+          s2.add_or_update_item(0x0001, 255, limit=K.SLOT_MAX_ITEMS)
+          and s2.get_item(0x0001) == 255)
+
+    # A9 的 GUI 语义：已满时提示「数量已满」，而不是误报添加成功
+    d_gui = os.path.join(tmp, "a9_gui")
+    os.makedirs(d_gui)
+    gd_gui, sd_gui = make_saves(d_gui)
+    _install_gui_stubs()
+    import nier_editor
+    _prepare_gui_stubs(nier_editor)
+    msgs = _capture_messagebox(nier_editor)
+    ed = _make_editor(nier_editor, gd_gui, sd_gui)
+    ed.slotdata.set_item(0, iid, 255)
+    ed.item_add_var = nier_editor.tk.StringVar(f"{get_item_name(iid)} (0x{iid:04X})")
+    ed._add_item()
+    check("A9 GUI 对已满 255 的道具提示「数量已满」",
+          bool(msgs["warning"]) and msgs["warning"][-1][0] == "数量已满"
+          and ed.slotdata.get_item(iid) == 255,
+          f"warnings={msgs['warning']}, amount={ed.slotdata.get_item(iid)}")
+
+
+def _test_a10(tmp: str) -> None:
+    """A10：下拉框只读，未知道具 ID 不得写入。"""
+    print("\nA10 下拉框与 ID 校验（GUI 对象级）")
+    d = os.path.join(tmp, "a10")
+    os.makedirs(d)
+    gd, sd = make_saves(d)
+    _install_gui_stubs()
+    import nier_editor
+    _prepare_gui_stubs(nier_editor)
+    msgs = _capture_messagebox(nier_editor)
+
+    ui = object.__new__(nier_editor.NierSaveEditor)
+    ui.item_tab = _FakeWidget()
+    ui._build_item_tab()
+    check("A10 道具添加下拉框 state=readonly",
+          ui.item_add_cb.cget("state") == "readonly",
+          str(ui.item_add_cb.cget("state")))
+
+    ui2 = object.__new__(nier_editor.NierSaveEditor)
+    ui2.chip_tab = _FakeWidget()
+    ui2._build_chip_tab()
+    check("A10 芯片添加下拉框 state=readonly",
+          ui2.chip_add_cb.cget("state") == "readonly",
+          str(ui2.chip_add_cb.cget("state")))
+
+    ed = _make_editor(nier_editor, gd, sd)
+    ed.item_add_var = nier_editor.tk.StringVar("未知道具 (0xFFFF)")
+    msgs["warning"].clear()
+    ed._add_item()
+    check("A10 未知 ID 0xFFFF 被拒绝且提示「未知道具 ID」",
+          bool(msgs["warning"]) and msgs["warning"][-1][0] == "未知道具 ID"
+          and ed.slotdata.get_items(1)[0] == (K.ITEM_EMPTY_ID, 0),
+          f"warnings={msgs['warning']}, first={ed.slotdata.get_items(1)[0]}")
+
+    msgs["warning"].clear()
+    ed.item_add_var.set("小恢复药 (0x0000)")
+    ed._add_item()
+    check("A10 合法 ID 仍可正常添加",
+          ed.slotdata.get_item(0x0000) == 1 and not msgs["warning"],
+          f"amount={ed.slotdata.get_item(0x0000)}, warnings={msgs['warning']}")
+
+
+def _test_a11(tmp: str) -> None:
+    """A11：系统芯片禁用等级并提示；添加时忽略等级。"""
+    print("\nA11 系统芯片等级（GUI 对象级）")
+    d = os.path.join(tmp, "a11")
+    os.makedirs(d)
+    gd, sd = make_saves(d)
+    _install_gui_stubs()
+    import nier_editor
+    _prepare_gui_stubs(nier_editor)
+    msgs = _capture_messagebox(nier_editor)
+
+    ui = object.__new__(nier_editor.NierSaveEditor)
+    ui.chip_tab = _FakeWidget()
+    ui._build_chip_tab()
+    unique_name = CHIPS.unique_names[0]
+    common_name = CHIPS.common_names[0]
+
+    ui.chip_add_var.set(unique_name)
+    ui._on_chip_add_selected()
+    check("A11 选中系统芯片后等级 Spinbox 禁用并提示固定等级",
+          ui.chip_lv_spin.cget("state") == "disabled"
+          and "固定等级" in ui.chip_lv_hint.cget("text"),
+          f"state={ui.chip_lv_spin.cget('state')}, hint={ui.chip_lv_hint.cget('text')!r}")
+
+    ui.chip_add_var.set(common_name)
+    ui._on_chip_add_selected()
+    check("A11 选中普通芯片后等级 Spinbox 恢复可用且提示清空",
+          ui.chip_lv_spin.cget("state") == "normal"
+          and ui.chip_lv_hint.cget("text") == "",
+          f"state={ui.chip_lv_spin.cget('state')}, hint={ui.chip_lv_hint.cget('text')!r}")
+
+    ed = _make_editor(nier_editor, gd, sd)
+    ed.chip_add_var = nier_editor.tk.StringVar(unique_name)
+    ed.chip_lv_var = nier_editor.tk.IntVar(8)
+    msgs["error"].clear()
+    ed._add_chip()
+    expected_level = struct.unpack_from("<i", CHIPS.to_bytes(unique_name), 12)[0]
+    installed = ed.slotdata.get_installed_chips()
+    check("A11 添加系统芯片时忽略等级 8、按固定等级写入",
+          not msgs["error"] and len(installed) == 1
+          and installed[0]["level"] == expected_level
+          and CHIPS.to_name(installed[0]["raw"][:12]) == unique_name,
+          f"errors={msgs['error']}, installed={installed}")
+
+    ed.chip_add_var.set(common_name)
+    ed.chip_lv_var.set(3)
+    ed._add_chip()
+    installed = ed.slotdata.get_installed_chips()
+    check("A11 普通芯片仍按用户选择的 +3 写入",
+          len(installed) == 2 and installed[1]["level"] == 3,
+          str([c["level"] for c in installed]))
+
+
+def _test_a12(tmp: str) -> None:
+    """A12：武器增/减/设数量强制 1、重复添加不累加、列表显示 1。"""
+    print("\nA12 武器数量（GUI 对象级）")
+    d = os.path.join(tmp, "a12")
+    os.makedirs(d)
+    gd, sd = make_saves(d)
+    _install_gui_stubs()
+    import nier_editor
+    _prepare_gui_stubs(nier_editor)
+    msgs = _capture_messagebox(nier_editor)
+
+    weapon = 0x042E  # 白之契约
+    ed = _make_editor(nier_editor, gd, sd)
+    ed.gamedata.set_item(0, weapon, 1)
+    ed.slotdata.set_item(0, weapon, 1)
+    ed._get_selected_item_index = lambda: (0, weapon, ed.slotdata.get_item(weapon))
+    ed.item_amount_var.set("10")
+
+    for direction in (1, -1, 0):
+        msgs["warning"].clear()
+        try:
+            ed._mod_item(direction)
+            crashed = False
+        except Exception:
+            crashed = True
+        check(f"A12 武器 direction={direction} 强制数量 1 并提示不可堆叠",
+              not crashed and ed.slotdata.get_item(weapon) == 1
+              and ed.gamedata.get_item(weapon) == 1
+              and bool(msgs["warning"])
+              and "武器" in msgs["warning"][-1][0],
+              f"amount={ed.slotdata.get_item(weapon)}, warnings={msgs['warning']}")
+
+    ed2 = _make_editor(nier_editor, gd, sd)
+    ed2.item_add_var = nier_editor.tk.StringVar("白之契约 (0x042E)")
+    msgs["warning"].clear()
+    ed2._add_item()
+    check("A12 下拉框添加武器使用数量 1",
+          ed2.slotdata.get_item(weapon) == 1,
+          f"amount={ed2.slotdata.get_item(weapon)}")
+    msgs["warning"].clear()
+    ed2._add_item()
+    check("A12 重复添加同一武器不会累加到 2",
+          ed2.slotdata.get_item(weapon) == 1
+          and bool(msgs["warning"])
+          and "武器" in msgs["warning"][-1][0],
+          f"amount={ed2.slotdata.get_item(weapon)}, warnings={msgs['warning']}")
+
+    ed3 = _make_editor(nier_editor, gd, sd)
+    ed3.item_tree = _FakeTree()
+    ed3.item_search_var = nier_editor.tk.StringVar("")
+    ed3.item_cat_var = nier_editor.tk.StringVar("全部")
+    ed3.show_all_var = nier_editor.tk.BooleanVar(False)
+    ed3.slotdata.set_item(0, weapon, 5)  # 模拟旧存档里的非法堆叠
+    nier_editor.NierSaveEditor._refresh_items(ed3)  # 实例上 _refresh_items 已被替身覆盖
+    weapon_rows = [r for r in ed3.item_tree.rows
+                   if r[1] and r[1][2] == f"0x{weapon:04X}"]
+    check("A12 道具列表武器行数量列显示 1",
+          len(weapon_rows) == 1 and weapon_rows[0][1][1] == 1,
+          str([r[1] for r in weapon_rows]))
+
+
+def _test_a16(tmp: str) -> None:
+    """A16：sync 目标长度不足时抛 SaveError，不扩容、不改 _save_size。"""
+    print("\nA16 sync_money_items_from 不扩容")
+    d = os.path.join(tmp, "a16")
+    os.makedirs(d)
+    gd, sd = make_saves(d)
+    src = SaveFile(sd)
+    end_offset = K.OFFSET_ITEMS_START + K.SLOT_MAX_ITEMS * K.ITEM_RECORD_SIZE
+
+    dst = object.__new__(SaveFile)
+    dst.filepath = gd
+    dst._data = bytearray(1000)
+    dst._original_size = 1000
+    dst._save_size = 1000
+    dst._modified = False
+    dst._pending_tmp = None
+    try:
+        dst.sync_money_items_from(src)
+        raised = False
+    except SaveError:
+        raised = True
+    check("A16 目标长度不足时抛 SaveError", raised)
+    check("A16 失败后内存长度不变（不 extend）", len(dst._data) == 1000, str(len(dst._data)))
+    check("A16 失败后 _save_size 不变", dst._save_size == 1000 and not dst._modified,
+          f"_save_size={dst._save_size}, modified={dst._modified}")
+    check("A16 所需长度确实大于测试目标（用例有效）", end_offset > len(dst._data),
+          f"need={end_offset}, have={len(dst._data)}")
+
+    g = SaveFile(gd)
+    before_len, before_save_size = len(g._data), g._save_size
+    g.sync_money_items_from(src)
+    check("A16 合法长度同步后仍不扩容",
+          len(g._data) == before_len and g._save_size == before_save_size,
+          f"{before_len}->{len(g._data)}, _save_size={g._save_size}")
+
 def main() -> int:
     print("数据表")
     check("道具 + 武器共 260 条", len(ITEM_NAMES) == 260, f"实际 {len(ITEM_NAMES)}")
@@ -477,6 +905,12 @@ def main() -> int:
     _test_a4(tmp)
     _test_a6(tmp)
     _test_a7(tmp)
+    _test_a8(tmp)
+    _test_a9(tmp)
+    _test_a10(tmp)
+    _test_a11(tmp)
+    _test_a12(tmp)
+    _test_a16(tmp)
 
     print(f"\n结果：{PASS} 通过 / {FAIL} 失败")
     return 0 if FAIL == 0 else 1

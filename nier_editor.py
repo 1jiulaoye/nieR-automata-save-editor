@@ -179,7 +179,7 @@ class NierSaveEditor:
         all_items = sorted(ITEM_NAMES.items(), key=lambda x: x[1])
         item_names = [f"{n} (0x{i:04X})" for i, n in all_items]
         self.item_add_cb = ttk.Combobox(add_frame, textvariable=self.item_add_var,
-                                        values=item_names, width=35)
+                                        values=item_names, width=35, state="readonly")
         self.item_add_cb.pack(side=LEFT, padx=5)
         ttk.Button(add_frame, text="添加", bootstyle=SUCCESS,
                    command=self._add_item).pack(side=LEFT, padx=5)
@@ -239,13 +239,19 @@ class NierSaveEditor:
         unique_names = sorted(CHIPS.unique_names)
         all_chip_names = common_names + unique_names
         self.chip_add_cb = ttk.Combobox(add_frame, textvariable=self.chip_add_var,
-                                        values=all_chip_names, width=25)
+                                        values=all_chip_names, width=25, state="readonly")
         self.chip_add_cb.pack(side=LEFT, padx=5)
+        # 选中系统/唯一芯片时，等级由芯片本身固定，禁用等级输入并给出提示
+        self.chip_add_cb.bind('<<ComboboxSelected>>',
+                              lambda e: self._on_chip_add_selected())
 
         ttk.Label(add_frame, text="等级:").pack(side=LEFT, padx=(10, 5))
         self.chip_lv_var = tk.IntVar(value=0)
-        ttk.Spinbox(add_frame, from_=0, to=8, textvariable=self.chip_lv_var,
-                    width=5).pack(side=LEFT, padx=5)
+        self.chip_lv_spin = ttk.Spinbox(add_frame, from_=0, to=8,
+                                        textvariable=self.chip_lv_var, width=5)
+        self.chip_lv_spin.pack(side=LEFT, padx=5)
+        self.chip_lv_hint = ttk.Label(add_frame, text="", font=("Microsoft YaHei", 8))
+        self.chip_lv_hint.pack(side=LEFT, padx=5)
 
         ttk.Button(add_frame, text="添加", bootstyle=SUCCESS,
                    command=self._add_chip).pack(side=LEFT, padx=5)
@@ -409,7 +415,9 @@ class NierSaveEditor:
                 if category != "全部" and get_category(iid) != category:
                     continue
                 # tags=(str(i),) 存储原始索引，避免重复 item_id 导致改错
-                self.item_tree.insert("", END, values=(name, amt, f"0x{iid:04X}"),
+                # A12：武器不可堆叠，列表里数量固定显示 1
+                display_amt = 1 if is_weapon(iid) else amt
+                self.item_tree.insert("", END, values=(name, display_amt, f"0x{iid:04X}"),
                                       tags=(str(i),))
         except Exception as e:
             self.status_var.set(f"道具读取异常: {e}")
@@ -437,21 +445,35 @@ class NierSaveEditor:
         if idx < 0:
             messagebox.showwarning("未选中", "请先选择一个道具")
             return
+        # A8：数量输入必须是 1..255 的整数；非法输入一律不写入
         try:
             amt_val = int(self.item_amount_var.get())
-        except ValueError:
-            messagebox.showwarning("输入错误", "请输入有效整数")
+        except (ValueError, TypeError):
+            messagebox.showwarning("输入错误", f"数量必须是 1-{MAX_ITEM_AMOUNT} 的整数")
             return
-        if direction == 1:
+        if not (1 <= amt_val <= MAX_ITEM_AMOUNT):
+            messagebox.showwarning("输入错误", f"数量必须是 1-{MAX_ITEM_AMOUNT} 的整数")
+            return
+
+        # A12：武器不可堆叠，增/减/设数量都强制为 1（但先完成上面的输入校验）
+        if is_weapon(iid):
+            new_amt = 1
+            messagebox.showwarning("武器不可堆叠", "武器数量固定为 1，已按 1 处理")
+        elif direction == 1:
             new_amt = min(cur + amt_val, MAX_ITEM_AMOUNT)
         elif direction == -1:
             new_amt = max(cur - amt_val, 0)
         else:
             new_amt = min(max(amt_val, 0), MAX_ITEM_AMOUNT)
-        # 同时写 GameData 和 SlotData 保持一致
-        self.gamedata.set_item(idx, iid, new_amt)
-        if idx < SLOT_MAX_ITEMS:
-            self.slotdata.set_item(idx, iid, new_amt)
+
+        # 同时写 GameData 和 SlotData 保持一致；任何异常都转成提示，不能逃出 Tk 回调
+        try:
+            self.gamedata.set_item(idx, iid, new_amt)
+            if idx < SLOT_MAX_ITEMS:
+                self.slotdata.set_item(idx, iid, new_amt)
+        except Exception as e:
+            messagebox.showerror("修改失败", f"写入道具失败：{e}")
+            return
         self._money_items_dirty = True
         self._refresh_items()
         self.status_var.set(f"道具 {get_item_name(iid)} → {new_amt}（未保存）")
@@ -466,12 +488,28 @@ class NierSaveEditor:
         import re
         m = re.search(r'0x([0-9A-Fa-f]+)', sel)
         if not m:
+            messagebox.showwarning("未知道具 ID", "请从下拉框选择有效道具")
             return
         iid = int(m.group(1), 16)
+        # A10：下拉框只读 + 这里再校验一次，防止未知 ID（含 0xFFFF）被写进存档
+        if iid not in ITEM_NAMES:
+            messagebox.showwarning("未知道具 ID", f"未知道具 ID: 0x{iid:04X}")
+            return
+
+        # A12：武器不可堆叠；已经拥有时保持 1，不重复累加
+        amount = 1
+        if is_weapon(iid):
+            if self.slotdata.get_item(iid) > 0:
+                messagebox.showwarning("武器不可堆叠", "该武器已经拥有，数量固定为 1")
+                return
+
         # 以 SlotData 为权威添加，再同步到 GameData
-        added = self.slotdata.add_or_update_item(iid, 1, limit=SLOT_MAX_ITEMS)
+        added = self.slotdata.add_or_update_item(iid, amount, limit=SLOT_MAX_ITEMS)
         if not added:
-            messagebox.showwarning("槽位已满", "SlotData 道具槽位已满，无法添加")
+            if self.slotdata.get_item(iid) >= MAX_ITEM_AMOUNT:
+                messagebox.showwarning("数量已满", "该道具数量已满（255），无法继续增加")
+            else:
+                messagebox.showwarning("槽位已满", "SlotData 道具槽位已满，无法添加")
             return
         # 同步到 GameData
         self.gamedata.sync_money_items_from(self.slotdata)
@@ -550,6 +588,16 @@ class NierSaveEditor:
         self._refresh_chips()
         self.status_var.set("芯片已删除（未保存）")
 
+    def _on_chip_add_selected(self):
+        """A11：系统/唯一芯片等级固定，禁用等级输入并提示；普通芯片恢复可用。"""
+        name = self.chip_add_var.get()
+        if name in CHIPS.unique_names:
+            self.chip_lv_spin.configure(state="disabled")
+            self.chip_lv_hint.config(text="该系统芯片固定等级")
+        else:
+            self.chip_lv_spin.configure(state="normal")
+            self.chip_lv_hint.config(text="")
+
     def _add_chip(self):
         if not self.slotdata:
             return
@@ -558,16 +606,16 @@ class NierSaveEditor:
             if not name:
                 return
 
-            level = int(self.chip_lv_var.get())
-            if not 0 <= level <= 8:
-                messagebox.showwarning("输入错误", "等级必须是 0-8")
-                return
-
-            # 普通芯片 +0 不加后缀，+1~+8 加后缀
-            if name in CHIPS.common_names:
-                full_name = name if level == 0 else f"{name} +{level}"
-            else:
+            # A11：系统/唯一芯片忽略等级输入（记录里自带固定等级）
+            if name in CHIPS.unique_names:
                 full_name = name
+            else:
+                level = int(self.chip_lv_var.get())
+                if not 0 <= level <= 8:
+                    messagebox.showwarning("输入错误", "等级必须是 0-8")
+                    return
+                # 普通芯片 +0 不加后缀，+1~+8 加后缀
+                full_name = name if level == 0 else f"{name} +{level}"
 
             chip_bytes = CHIPS.to_bytes(full_name)
             if len(chip_bytes) != CHIP_RECORD_SIZE:

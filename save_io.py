@@ -400,7 +400,22 @@ class SaveFile:
         self._modified = True
 
     def add_or_update_item(self, item_id: int, amount: int = 1, limit: int = MAX_ITEMS) -> bool:
-        """添加道具（找到已有条目则增加数量，否则写入空槽）。limit 限制搜索范围。返回是否成功"""
+        """添加道具（找到已有条目则增加数量，否则写入空槽）。limit 限制搜索范围。
+
+        返回值约定：
+        - True：本次确实写入了新道具，或把已有道具的数量增加了至少 1；
+        - False：道具已存在且数量已经是 255（本次没有增加）；
+        - item_id / amount 非法时抛 ValueError（不写入任何数据）：
+          item_id 必须为 0..0xFFFE（0xFFFF 是空槽标记，不允许写入），
+          amount 必须为 1..255。
+        """
+        if not isinstance(item_id, int) or not (0 <= item_id < ITEM_EMPTY_ID):
+            raise ValueError(
+                f"item_id must be 0-{ITEM_EMPTY_ID - 1} (0xFFFF is the empty slot marker), "
+                f"got {item_id!r}"
+            )
+        if not isinstance(amount, int) or not (1 <= amount <= MAX_ITEM_AMOUNT):
+            raise ValueError(f"Amount must be 1-{MAX_ITEM_AMOUNT}, got {amount!r}")
         # 同时受调用方 limit 与文件实际容量限制，避免 set_item 越界写进芯片区
         max_search = min(limit, self._max_items())
         # 先找已有条目
@@ -409,6 +424,8 @@ class SaveFile:
             sid = struct.unpack_from('<H', self._data, offset)[0]
             if sid == item_id:
                 current = self._data[offset + 8]
+                if current >= MAX_ITEM_AMOUNT:
+                    return False  # 已满 255，本次没有增加
                 new_amt = min(current + amount, MAX_ITEM_AMOUNT)
                 self._data[offset + 8] = new_amt
                 self._modified = True
@@ -441,11 +458,13 @@ class SaveFile:
         source._check_bounds(OFFSET_MONEY, 4, "同步金币源数据")
         source._check_bounds(OFFSET_ITEMS_START, items_size, "同步道具源数据")
 
-        # 确保目标（本对象）足够大
+        # 目标文件必须原本就容纳完整金币+道具区；绝不扩容（保持文件长度不变量）
         if len(self._data) < end_offset:
-            self._data.extend(b'\x00' * (end_offset - len(self._data)))
-            if end_offset > self._save_size:
-                self._save_size = end_offset
+            raise SaveError(
+                f"{os.path.basename(self.filepath)} 长度不足：同步金币/道具需要至少 "
+                f"{end_offset:,} 字节，当前只有 {len(self._data):,} 字节；"
+                f"已拒绝同步，文件未被修改。"
+            )
 
         # 复制金币 (4 字节)
         self._data[OFFSET_MONEY:OFFSET_MONEY + 4] = source._data[OFFSET_MONEY:OFFSET_MONEY + 4]
