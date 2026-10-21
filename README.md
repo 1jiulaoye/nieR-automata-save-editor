@@ -2,9 +2,9 @@
 
 > **《尼尔：机械纪元》存档修改器** — 图形界面修改金币、道具、芯片，即改即用
 
-[![GitHub release](https://img.shields.io/github/v/release/7xbyte/nieR-automata-save-editor)](https://github.com/7xbyte/nieR-automata-save-editor/releases)
-[![下载量](https://img.shields.io/github/downloads/7xbyte/nieR-automata-save-editor/total)](https://github.com/7xbyte/nieR-automata-save-editor/releases)
-[![平台](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/7xbyte/nieR-automata-save-editor/releases)
+[![GitHub release](https://img.shields.io/github/v/release/1jiulaoye/nieR-automata-save-editor)](https://github.com/1jiulaoye/nieR-automata-save-editor/releases)
+[![下载量](https://img.shields.io/github/downloads/1jiulaoye/nieR-automata-save-editor/total)](https://github.com/1jiulaoye/nieR-automata-save-editor/releases)
+[![平台](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/1jiulaoye/nieR-automata-save-editor/releases)
 [![许可证](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ---
@@ -16,6 +16,8 @@
 无需折腾复杂的 Cheat Engine 或命令行脚本，通过漂亮的图形界面即可轻松修改存档中的 **金币（G）**、**消耗品道具**、**素材**、**武器** 以及 **Plug-in Chip（芯片）** 数据。保存后启动游戏，修改即刻生效。
 
 > 🐱 由 [小柒的百宝箱](https://keaixiaoqi.cn) 制作维护，专为 PC 版（Steam / Microsoft Store）设计。
+
+🌐 **在线展示页**：[1jiulaoye.github.io/nieR-automata-save-editor](https://1jiulaoye.github.io/nieR-automata-save-editor/)
 
 ---
 
@@ -52,7 +54,7 @@
 | 文件 | 大小 | 下载 |
 |------|------|------|
 | `nier-save-editor-v1.3.zip` | ~20 MB | [⬇️ 点击下载](https://keaixiaoqi.cn/downloads/nier-save-editor-v1.3.zip) |
-| GitHub Release | — | [⬇️ 从 GitHub 下载](https://github.com/7xbyte/nieR-automata-save-editor/releases) |
+| GitHub Release | — | [⬇️ 从 GitHub 下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases) |
 
 > **系统要求**：Windows 7 及以上（64位）
 >
@@ -137,7 +139,7 @@
 - **不需要**。下载的 exe 是打包好的独立程序，双击即可运行 🎉
 
 ### ❓ 道具列表不全怎么办？
-- 当前收录的道具数据覆盖了游戏内绝大部分常见道具。如发现缺失，欢迎提 [Issue](https://github.com/7xbyte/nieR-automata-save-editor/issues) 反馈
+- 当前收录的道具数据覆盖了游戏内绝大部分常见道具。如发现缺失，欢迎提 [Issue](https://github.com/1jiulaoye/nieR-automata-save-editor/issues) 反馈
 
 ---
 
@@ -191,7 +193,7 @@ nier-save-editor/
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/7xbyte/nieR-automata-save-editor.git
+git clone https://github.com/1jiulaoye/nieR-automata-save-editor.git
 cd nieR-automata-save-editor
 
 # 2. 安装依赖
@@ -229,8 +231,8 @@ pyinstaller xiaoqi-nier-editor.spec
 ## 🤝 贡献
 
 发现 Bug 或有建议？欢迎：
-- 提交 [Issue](https://github.com/7xbyte/nieR-automata-save-editor/issues)
-- 发起 [Pull Request](https://github.com/7xbyte/nieR-automata-save-editor/pulls)
+- 提交 [Issue](https://github.com/1jiulaoye/nieR-automata-save-editor/issues)
+- 发起 [Pull Request](https://github.com/1jiulaoye/nieR-automata-save-editor/pulls)
 - 在 [小柒的百宝箱](https://keaixiaoqi.cn) 留言反馈
 
 ---

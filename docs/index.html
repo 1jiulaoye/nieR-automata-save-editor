@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NieR:Automata 存档修改器 · 小柒的百宝箱</title>
+<meta name="description" content="《尼尔：机械纪元》存档修改器 —— 图形界面修改金币、道具、芯片，支持三个存档位，即改即用。免费开源，支持 Steam 与 Microsoft Store 版本。">
+<meta property="og:title" content="NieR:Automata 存档修改器">
+<meta property="og:description" content="图形界面修改金币、道具、芯片，即改即用。免费开源。">
+<meta property="og:type" content="website">
+<style>
+  :root {
+    --paper: #d8d2c6;
+    --paper-2: #cfc8ba;
+    --ink: #26251f;
+    --ink-soft: #55524a;
+    --line: #a49c8b;
+    --accent: #8a6a3f;
+    --dark: #1d1c19;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: "SF Mono", "Cascadia Mono", Consolas, "Courier New", monospace; }
+  .wrap { width: min(1040px, calc(100% - 48px)); margin: 0 auto; }
+
+  /* 顶栏 */
+  header {
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(216, 210, 198, .92);
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(8px);
+  }
+  header .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; }
+  .brand { font-weight: 700; letter-spacing: .18em; font-size: 14px; }
+  .brand span { color: var(--accent); }
+  nav a {
+    color: var(--ink-soft); text-decoration: none; font-size: 13px;
+    margin-left: 22px; letter-spacing: .06em; transition: color .2s;
+  }
+  nav a:hover { color: var(--accent); }
+
+  /* 首屏 */
+  .hero { padding: 92px 0 72px; border-bottom: 1px solid var(--line); position: relative; overflow: hidden; }
+  .hero::after {
+    content: "YoRHa";
+    position: absolute; right: -20px; top: 10px;
+    font-family: monospace; font-size: clamp(70px, 15vw, 190px);
+    color: rgba(38, 37, 31, .05); letter-spacing: .1em; pointer-events: none;
+  }
+  .kicker { font-size: 12px; letter-spacing: .32em; color: var(--accent); text-transform: uppercase; }
+  h1 {
+    font-size: clamp(34px, 6.4vw, 62px); line-height: 1.15; font-weight: 800;
+    margin: 18px 0 22px; letter-spacing: .02em;
+  }
+  h1 em { font-style: normal; color: var(--accent); }
+  .lede { font-size: 17px; color: var(--ink-soft); max-width: 620px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 38px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 13px 26px; border: 1px solid var(--ink);
+    text-decoration: none; color: var(--ink); font-size: 14px;
+    letter-spacing: .08em; transition: all .18s ease;
+  }
+  .btn:hover { background: var(--ink); color: var(--paper); }
+  .btn-primary { background: var(--ink); color: var(--paper); }
+  .btn-primary:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* 数字条 */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--line); }
+  .stat { padding: 26px 0; text-align: center; border-right: 1px solid var(--line); }
+  .stat:last-child { border-right: 0; }
+  .stat b { display: block; font-size: 30px; font-weight: 800; letter-spacing: .02em; }
+  .stat small { color: var(--ink-soft); font-size: 12px; letter-spacing: .14em; }
+
+  /* 通用区块 */
+  section { padding: 76px 0; border-bottom: 1px solid var(--line); }
+  .sec-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 40px; }
+  .sec-head h2 { font-size: 24px; letter-spacing: .06em; font-weight: 800; }
+  .sec-head span { font-size: 12px; color: var(--ink-soft); letter-spacing: .24em; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(238px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+  .card { background: var(--paper); padding: 30px 26px; }
+  .card .ico { font-size: 22px; }
+  .card h3 { font-size: 16px; margin: 12px 0 10px; letter-spacing: .04em; }
+  .card p { font-size: 14px; color: var(--ink-soft); }
+  .card ul { margin-top: 10px; padding-left: 18px; font-size: 13.5px; color: var(--ink-soft); }
+  .card li { margin: 3px 0; }
+
+  /* 步骤 */
+  .steps { counter-reset: s; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 28px; }
+  .step { counter-increment: s; position: relative; padding-top: 46px; }
+  .step::before {
+    content: "0" counter(s);
+    position: absolute; top: 0; left: 0;
+    font-family: monospace; font-size: 13px; letter-spacing: .1em;
+    color: var(--accent); border-bottom: 2px solid var(--accent); padding-bottom: 4px;
+  }
+  .step h3 { font-size: 15px; margin-bottom: 8px; }
+  .step p, .step code { font-size: 13.5px; color: var(--ink-soft); }
+  code { font-family: "SF Mono", Consolas, monospace; background: rgba(38,37,31,.07); padding: 2px 6px; font-size: .92em; }
+
+  /* 截图 */
+  .shot {
+    border: 1px solid var(--line); background: var(--paper-2);
+    aspect-ratio: 16/9; display: grid; place-items: center; overflow: hidden;
+  }
+  .shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .shot .ph { text-align: center; color: var(--ink-soft); font-size: 13px; letter-spacing: .1em; }
+
+  /* FAQ */
+  details { border-bottom: 1px solid var(--line); padding: 18px 0; }
+  details:first-of-type { border-top: 1px solid var(--line); }
+  summary { cursor: pointer; font-weight: 600; font-size: 15px; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; color: var(--accent); font-family: monospace; }
+  details[open] summary::after { content: "−"; }
+  details p { margin-top: 12px; font-size: 14px; color: var(--ink-soft); }
+
+  /* 表格 */
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; letter-spacing: .16em; color: var(--ink-soft); font-weight: 600; }
+  td:first-child { font-family: monospace; }
+
+  /* 页脚 */
+  footer { padding: 52px 0 64px; text-align: center; color: var(--ink-soft); font-size: 13px; }
+  footer .q { font-style: italic; margin-top: 14px; color: var(--accent); }
+  footer a { color: var(--ink-soft); }
+
+  @media (max-width: 620px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .stat:nth-child(2) { border-right: 0; }
+    .stat:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+    nav a { margin-left: 14px; }
+    nav a.hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="brand mono">NIER<span>//</span>SAVE EDITOR</div>
+    <nav>
+      <a href="#features">功能</a>
+      <a href="#start" class="hide-sm">上手</a>
+      <a href="#faq" class="hide-sm">问答</a>
+      <a href="https://github.com/1jiulaoye/nieR-automata-save-editor">源码</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <div class="kicker">NieR:Automata · PC Save Editor</div>
+    <h1>把存档<em>改回</em><br>你想要的样子</h1>
+    <p class="lede">
+      图形界面直接编辑《尼尔：机械纪元》存档：金币、道具、芯片，三个存档位随意切换。
+      不用 Cheat Engine，不用命令行，改完保存，回到游戏即刻生效。
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/1jiulaoye/nieR-automata-save-editor">查看源码</a>
+      <a class="btn" href="#start">使用说明</a>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="stats mono">
+    <div class="stat"><b>51</b><small>种芯片</small></div>
+    <div class="stat"><b>3</b><small>个存档位</small></div>
+    <div class="stat"><b>0</b><small>需要安装</small></div>
+    <div class="stat"><b>MIT</b><small>开源免费</small></div>
+  </div>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head"><h2>能改什么</h2><span>FEATURES</span></div>
+    <div class="grid">
+      <div class="card">
+        <div class="ico">💰</div>
+        <h3>金币</h3>
+        <p>读出存档里的 G，改成任意数值，或者一个按钮直接拉满。</p>
+      </div>
+      <div class="card">
+        <div class="ico">📦</div>
+        <h3>道具与素材</h3>
+        <p>列出当前持有的全部道具，想加就加、想删就删，中文名一目了然。</p>
+        <ul>
+          <li>消耗品 / 素材 / 武器</li>
+          <li>按名称检索，不用记 ID</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="ico">🧩</div>
+        <h3>Plug-in 芯片</h3>
+        <p>51 种芯片全部收录，附带效果说明，可调等级、可整套清空或填满。</p>
+        <ul>
+          <li>自动拾取 / 冲击波 / 移速上升…</li>
+          <li>按 48 字节结构对齐解析</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="ico">📁</div>
+        <h3>多存档位</h3>
+        <p>SlotData 0 / 1 / 2 自由切换，切换前自动提示保存，避免手滑。</p>
+        <ul>
+          <li>即改即用，不用退游戏</li>
+          <li>写回前保留原文件</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="start">
+  <div class="wrap">
+    <div class="sec-head"><h2>四步上手</h2><span>QUICK START</span></div>
+    <div class="steps">
+      <div class="step">
+        <h3>先备份存档</h3>
+        <p>存档在 <code>文档\My Games\NieR_Automata\</code>，把 <code>SlotData_0.dat</code> 复制一份再动手。</p>
+      </div>
+      <div class="step">
+        <h3>打开文件</h3>
+        <p>运行程序，点「打开存档」，选中要改的 <code>SlotData_#.dat</code>。</p>
+      </div>
+      <div class="step">
+        <h3>改数据</h3>
+        <p>金币页输数字或点 MAX；道具页增删；芯片页换等级。改动会即时预览。</p>
+      </div>
+      <div class="step">
+        <h3>保存回游戏</h3>
+        <p>点「保存」写回文件，切回游戏或重新读档，改动立刻生效。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head"><h2>界面</h2><span>SCREENSHOT</span></div>
+    <div class="shot">
+      <img src="https://keaixiaoqi.cn/images/nier-editor-preview.png" alt="NieR 存档修改器主界面"
+           onerror="this.style.display='none';this.parentNode.querySelector('.ph').style.display='block'">
+      <div class="ph" style="display:none">截图待更新 · 程序界面为 Tkinter 原生窗口</div>
+    </div>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <div class="sec-head"><h2>常见问题</h2><span>FAQ</span></div>
+    <details><summary>改完进游戏没变化？</summary>
+      <p>确认改的是 <code>SlotData_#.dat</code> 而不是 <code>GameData.dat</code>；游戏内数据有缓存，先存一次档再读回来即可。</p>
+    </details>
+    <details><summary>会被封号吗？</summary>
+      <p>《尼尔：机械纪元》是单机游戏，没有反作弊，改存档不会被封。用修改前建议先手动通关一遍，别把体验一次改没了。</p>
+    </details>
+    <details><summary>支持哪些版本？</summary>
+      <p>Steam 版、Microsoft Store / Game Pass 版都可以，理论上所有 PC 版通用。</p>
+    </details>
+    <details><summary>要装 Python 吗？</summary>
+      <p>不用。打包好的程序直接运行；想从源码跑才需要 <code>pip install -r requirements.txt</code>。</p>
+    </details>
+    <details><summary>道具列表不全？</summary>
+      <p>收录的是游戏内绝大部分常见道具。缺什么去仓库提 Issue，说明名字和用途即可。</p>
+    </details>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head"><h2>技术细节</h2><span>INTERNALS</span></div>
+    <table>
+      <thead><tr><th>部分</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>金币</td><td>4 字节整数，偏移 0x08</td></tr>
+        <tr><td>道具</td><td>定长记录数组，每条 36 字节（ID / 数量 / 填充）</td></tr>
+        <tr><td>芯片</td><td>定长记录数组，每条 48 字节（ID / 等级 / 数量 / 填充）</td></tr>
+        <tr><td>语言 / GUI</td><td>Python 3.11 + Tkinter</td></tr>
+        <tr><td>打包</td><td>PyInstaller 单文件</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>🐱 由 <a href="https://keaixiaoqi.cn">小柒的百宝箱</a> 制作 · MIT 许可 · 完全免费</div>
+    <div class="q">「为了人类的荣耀——以及更轻松的游戏体验」</div>
+    <div style="margin-top:18px">
+      <a href="https://github.com/1jiulaoye/nieR-automata-save-editor">GitHub</a> ·
+      <a href="https://github.com/1jiulaoye/nieR-automata-save-editor/issues">反馈</a> ·
+      <a href="https://keaixiaoqi.cn">更多工具</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
