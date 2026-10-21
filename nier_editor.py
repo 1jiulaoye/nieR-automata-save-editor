@@ -1,6 +1,6 @@
 """
-小柒 尼尔机械纪元 存档修改器
-GUI 主界面 — ttkbootstrap 暗色主题
+尼尔存档修改器
+GUI 主界面 — ttkbootstrap flatly 浅色主题
 支持：金币修改 / 背包道具管理 / 武器管理 / 芯片管理
 """
 
@@ -27,14 +27,43 @@ from chip_data import REGISTRY as CHIPS
 from chip_data import CHIP_EFFECTS, CHIP_RECORD_SIZE
 
 
+# ======================== 视觉规范 ========================
+
+UI_BG = "#f6f7f9"           # 页面底色
+UI_CARD = "#ffffff"         # 内容区白底
+UI_BORDER = "#e5e7eb"       # 1px 分隔线 / 控件描边
+UI_PRIMARY = "#2f6fed"      # 主色
+UI_PRIMARY_DARK = "#2559c4"
+UI_SUCCESS = "#16a34a"      # 成功色
+UI_SUCCESS_DARK = "#12813b"
+UI_TEXT = "#111827"
+UI_MUTED = "#6b7280"
+UI_SELECT = "#eaf0ff"
+UI_FONT = "Microsoft YaHei"
+
+SPACE_OUTER = 16            # 外边距
+SPACE_BLOCK = 12            # 块间距
+SPACE_INLINE = 8            # 行内间距
+
+
+def _shorten_path(path: str, limit: int = 46) -> str:
+    """路径过长时保留头尾、中间省略，避免把顶栏撑开。"""
+    if len(path) <= limit:
+        return path
+    head = max(12, limit // 2 - 4)
+    tail = max(12, limit - head - 1)
+    return f"{path[:head]}…{path[-tail:]}"
+
+
 class NierSaveEditor:
     """主窗口"""
 
     def __init__(self):
-        self.root = tb.Window(themename="darkly")
-        self.root.title("小柒 尼尔机械纪元 存档修改器")
-        self.root.geometry("950x680")
-        self.root.minsize(800, 550)
+        self.root = tb.Window(themename="flatly")
+        self.root.title("尼尔存档修改器")
+        self.root.geometry("940x660")
+        self.root.minsize(840, 600)
+        self.root.configure(background=UI_BG)
 
         # 状态
         self.save_folder = tk.StringVar()
@@ -45,312 +74,717 @@ class NierSaveEditor:
         self._money_items_dirty = False  # 金币/背包道具被改过
         self._weapons_dirty = False      # 武器表被改过
         self._chips_dirty = False        # 芯片被改过
+        self._slot_buttons = []
+        self._corpse_window = None
 
+        self._configure_fonts()
+        self._configure_styles()
         self._build_ui()
         self._auto_detect_folder()
+
+    # ======================== 全局样式 ========================
+
+    def _configure_fonts(self):
+        """全局 Microsoft YaHei 10（找不到字体时 Tk 会自动回退）。"""
+        try:
+            import tkinter.font as tkfont
+            for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont",
+                         "TkHeadingFont", "TkCaptionFont"):
+                try:
+                    tkfont.nametofont(name).configure(family=UI_FONT, size=10)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _configure_styles(self):
+        style = ttk.Style()
+        style.configure(
+            ".", font=(UI_FONT, 10), background=UI_BG, foreground=UI_TEXT,
+        )
+
+        # 容器 / 文字
+        style.configure("TFrame", background=UI_BG)
+        style.configure("Card.TFrame", background=UI_CARD)
+        style.configure("TopBar.TFrame", background=UI_CARD)
+        style.configure("Status.TFrame", background=UI_CARD)
+        style.configure("Card.TLabel", background=UI_CARD,
+                        foreground=UI_TEXT, font=(UI_FONT, 10))
+        style.configure("Field.TLabel", background=UI_CARD,
+                        foreground=UI_MUTED, font=(UI_FONT, 9))
+        style.configure("Path.TLabel", background=UI_CARD,
+                        foreground=UI_MUTED, font=(UI_FONT, 9))
+        style.configure("Muted.TLabel", background=UI_CARD,
+                        foreground=UI_MUTED, font=(UI_FONT, 9))
+        style.configure("Count.TLabel", background=UI_CARD,
+                        foreground=UI_MUTED, font=(UI_FONT, 9))
+        style.configure("Section.TLabel", background=UI_CARD,
+                        foreground=UI_TEXT, font=(UI_FONT, 12, "bold"))
+        style.configure("Money.TLabel", background=UI_CARD,
+                        foreground=UI_TEXT, font=(UI_FONT, -36, "bold"))
+
+        # 按钮
+        style.configure(
+            "Primary.TButton", background=UI_PRIMARY, foreground="#ffffff",
+            bordercolor=UI_PRIMARY, focuscolor=UI_PRIMARY,
+            padding=(14, 7), font=(UI_FONT, 10),
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("pressed", UI_PRIMARY_DARK),
+                        ("active", UI_PRIMARY_DARK)],
+            foreground=[("disabled", "#ffffff")],
+        )
+        style.configure(
+            "Success.TButton", background=UI_SUCCESS, foreground="#ffffff",
+            bordercolor=UI_SUCCESS, focuscolor=UI_SUCCESS,
+            padding=(14, 7), font=(UI_FONT, 10),
+        )
+        style.map(
+            "Success.TButton",
+            background=[("pressed", UI_SUCCESS_DARK),
+                        ("active", UI_SUCCESS_DARK)],
+            foreground=[("disabled", "#ffffff")],
+        )
+        style.configure(
+            "Ghost.TButton", background=UI_CARD, foreground=UI_TEXT,
+            bordercolor=UI_BORDER, focuscolor=UI_BORDER,
+            padding=(12, 7), font=(UI_FONT, 10),
+        )
+        style.map(
+            "Ghost.TButton",
+            background=[("active", "#f3f4f6"), ("pressed", "#e5e7eb")],
+            foreground=[("active", UI_TEXT)],
+        )
+        style.configure(
+            "Danger.TButton", background=UI_CARD, foreground="#dc2626",
+            bordercolor="#fecaca", focuscolor="#fecaca",
+            padding=(12, 7), font=(UI_FONT, 10),
+        )
+        style.map(
+            "Danger.TButton",
+            background=[("active", "#fef2f2"), ("pressed", "#fee2e2")],
+            foreground=[("active", "#b91c1c")],
+        )
+        style.configure(
+            "Slot.TButton", background=UI_CARD, foreground=UI_TEXT,
+            bordercolor=UI_BORDER, focuscolor=UI_BORDER,
+            padding=(6, 5), font=(UI_FONT, 10),
+        )
+        style.map(
+            "Slot.TButton",
+            background=[("active", "#f3f4f6")],
+            foreground=[("active", UI_TEXT)],
+        )
+        style.configure(
+            "SlotActive.TButton", background=UI_PRIMARY, foreground="#ffffff",
+            bordercolor=UI_PRIMARY, focuscolor=UI_PRIMARY,
+            padding=(6, 5), font=(UI_FONT, 10, "bold"),
+        )
+        style.map(
+            "SlotActive.TButton",
+            background=[("active", UI_PRIMARY_DARK),
+                        ("pressed", UI_PRIMARY_DARK)],
+        )
+        style.configure(
+            "Backup.TMenubutton", background=UI_CARD, foreground=UI_TEXT,
+            bordercolor=UI_BORDER, focuscolor=UI_BORDER,
+            padding=(12, 6), font=(UI_FONT, 10),
+        )
+        style.map(
+            "Backup.TMenubutton",
+            background=[("active", "#f3f4f6"), ("pressed", "#e5e7eb")],
+            foreground=[("active", UI_TEXT)],
+        )
+        style.configure(
+            "Link.TButton", background=UI_CARD, foreground=UI_MUTED,
+            borderwidth=0, relief="flat", padding=(6, 4),
+            font=(UI_FONT, 9),
+        )
+        style.map(
+            "Link.TButton",
+            background=[("active", UI_CARD)],
+            foreground=[("active", UI_PRIMARY)],
+        )
+
+        # 输入控件
+        style.configure(
+            "TEntry", fieldbackground=UI_CARD, foreground=UI_TEXT,
+            bordercolor=UI_BORDER, lightcolor=UI_BORDER,
+            darkcolor=UI_BORDER, padding=5,
+        )
+        style.configure(
+            "TSpinbox", fieldbackground=UI_CARD, foreground=UI_TEXT,
+            bordercolor=UI_BORDER, arrowcolor=UI_MUTED, padding=4,
+        )
+        style.configure(
+            "TCombobox", fieldbackground=UI_CARD, background=UI_CARD,
+            foreground=UI_TEXT, bordercolor=UI_BORDER,
+            arrowcolor=UI_MUTED, padding=5,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", UI_CARD)],
+            foreground=[("readonly", UI_TEXT)],
+            selectbackground=[("readonly", UI_CARD)],
+            selectforeground=[("readonly", UI_TEXT)],
+        )
+        style.configure(
+            "TCheckbutton", background=UI_CARD, foreground=UI_MUTED,
+            font=(UI_FONT, 9), padding=(2, 0),
+        )
+        style.map(
+            "TCheckbutton",
+            background=[("active", UI_CARD)],
+            foreground=[("active", UI_TEXT)],
+        )
+        style.configure("TSeparator", background=UI_BORDER)
+
+        # 列表
+        style.configure(
+            "Treeview", background=UI_CARD, fieldbackground=UI_CARD,
+            foreground=UI_TEXT, rowheight=30, borderwidth=0,
+            font=(UI_FONT, 10),
+        )
+        style.configure(
+            "Treeview.Heading", background="#f9fafb", foreground=UI_MUTED,
+            font=(UI_FONT, 9, "bold"), relief="flat", padding=(8, 7),
+            borderwidth=0,
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", UI_SELECT)],
+            foreground=[("selected", UI_TEXT)],
+        )
+        style.map(
+            "Treeview.Heading",
+            background=[("active", "#f3f4f6")],
+            foreground=[("active", UI_TEXT)],
+        )
+
+        # Notebook
+        style.configure(
+            "TNotebook", background=UI_BG, borderwidth=0,
+            tabmargins=(0, 0, 0, 0),
+        )
+        style.configure(
+            "TNotebook.Tab", background=UI_BG, foreground=UI_MUTED,
+            padding=(18, 8), font=(UI_FONT, 10), borderwidth=0,
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", UI_CARD)],
+            foreground=[("selected", UI_PRIMARY)],
+        )
+
+        # 下拉列表配色（Tk 原生 Listbox）
+        try:
+            self.root.option_add("*TCombobox*Listbox.background", UI_CARD)
+            self.root.option_add("*TCombobox*Listbox.foreground", UI_TEXT)
+            self.root.option_add("*TCombobox*Listbox.selectBackground", UI_SELECT)
+            self.root.option_add("*TCombobox*Listbox.selectForeground", UI_TEXT)
+            self.root.option_add("*TCombobox*Listbox.font", (UI_FONT, 10))
+        except Exception:
+            pass
 
     # ======================== UI 构建 ========================
 
     def _build_ui(self):
-        # 顶部：路径选择
-        top = ttk.Frame(self.root, padding=(10, 10, 10, 5))
-        top.pack(fill=X)
-        ttk.Label(top, text="存档文件夹:").pack(side=LEFT, padx=(0, 5))
-        ttk.Entry(top, textvariable=self.save_folder, width=50).pack(side=LEFT, padx=5)
-        ttk.Button(top, text="浏览...", command=self._browse_folder).pack(side=LEFT, padx=5)
-        ttk.Button(top, text="刷新", command=self._refresh).pack(side=LEFT, padx=5)
+        # 1) 顶栏：56px 白底 + 1px 底部分隔线
+        topbar = ttk.Frame(self.root, style="TopBar.TFrame", height=56)
+        topbar.pack(fill=X, side=tk.TOP)
+        topbar.pack_propagate(False)
 
-        # 存档位选择
-        slot_frame = ttk.Frame(self.root, padding=(10, 0, 10, 5))
-        slot_frame.pack(fill=X)
-        ttk.Label(slot_frame, text="存档位:").pack(side=LEFT, padx=(0, 5))
-        for i, label in enumerate(["Slot 1", "Slot 2", "Slot 3"]):
-            ttk.Radiobutton(slot_frame, text=label, variable=self.cur_slot,
-                           value=i, command=self._switch_slot).pack(side=LEFT, padx=5)
+        top_line = tk.Frame(self.root, background=UI_BORDER, height=1)
+        top_line.pack(fill=X, side=tk.TOP)
 
-        # 分隔线
-        ttk.Separator(self.root, orient=HORIZONTAL).pack(fill=X, padx=10, pady=5)
+        top_inner = ttk.Frame(topbar, style="TopBar.TFrame")
+        top_inner.pack(fill=BOTH, expand=True, padx=SPACE_OUTER)
 
-        # 笔记本
+        left = ttk.Frame(top_inner, style="TopBar.TFrame")
+        left.pack(side=LEFT, fill=Y)
+
+        ttk.Button(
+            left, text="打开存档文件夹", style="Primary.TButton",
+            command=self._browse_folder,
+        ).pack(side=LEFT, pady=11)
+
+        self.path_label = ttk.Label(
+            left, text="未选择存档文件夹", style="Path.TLabel",
+        )
+        self.path_label.pack(side=LEFT, padx=(SPACE_BLOCK, 0), pady=18)
+        self.save_folder.trace_add("write", lambda *_: self._update_path_label())
+
+        right = ttk.Frame(top_inner, style="TopBar.TFrame")
+        right.pack(side=RIGHT, fill=Y)
+
+        ttk.Button(
+            right, text="保存修改", style="Success.TButton",
+            command=self._save_all,
+        ).pack(side=RIGHT, padx=(SPACE_BLOCK, 0), pady=11)
+
+        slot_box = ttk.Frame(right, style="TopBar.TFrame")
+        slot_box.pack(side=RIGHT, pady=11)
+        for i in range(3):
+            btn = ttk.Button(
+                slot_box, text=str(i + 1), width=3, style="Slot.TButton",
+                command=lambda i=i: self._on_slot_clicked(i),
+            )
+            btn.pack(side=LEFT, padx=(0 if i == 0 else 6, 0))
+            self._slot_buttons.append(btn)
+
+        # 2) 内容区：四个 tab
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=5)
+        self.notebook.pack(
+            fill=BOTH, expand=True, padx=SPACE_OUTER, pady=SPACE_BLOCK,
+        )
 
-        # Tab 1: 金币
-        self.money_tab = ttk.Frame(self.notebook, padding=20)
-        self.notebook.add(self.money_tab, text="💰 金币")
+        self.money_tab = ttk.Frame(
+            self.notebook, style="Card.TFrame", padding=24,
+        )
+        self.notebook.add(self.money_tab, text="金币")
         self._build_money_tab()
 
-        # Tab 2: 道具
-        self.item_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.item_tab, text="🧪 道具")
+        self.item_tab = ttk.Frame(
+            self.notebook, style="Card.TFrame", padding=16,
+        )
+        self.notebook.add(self.item_tab, text="道具")
         self._build_item_tab()
 
-        # Tab 3: 武器（独立 39 条武器表）
-        self.weapon_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.weapon_tab, text="⚔ 武器")
+        self.weapon_tab = ttk.Frame(
+            self.notebook, style="Card.TFrame", padding=16,
+        )
+        self.notebook.add(self.weapon_tab, text="武器")
         self._build_weapon_tab()
 
-        # Tab 4: 尸体背包（只读，独立区域，不参与写入）
-        self.corpse_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.corpse_tab, text="💀 尸体背包（只读）")
-        self._build_corpse_tab()
-
-        # Tab 5: 芯片
-        self.chip_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.chip_tab, text="🔧 芯片")
+        self.chip_tab = ttk.Frame(
+            self.notebook, style="Card.TFrame", padding=16,
+        )
+        self.notebook.add(self.chip_tab, text="芯片")
         self._build_chip_tab()
 
-        # 底部：全局操作
-        bottom = ttk.Frame(self.root, padding=(10, 5, 10, 10))
-        bottom.pack(fill=X)
-        self.status_var = tk.StringVar(value="就绪")
-        ttk.Label(bottom, textvariable=self.status_var).pack(side=LEFT)
+        # 3) 状态栏：左侧状态 + 右侧「备份 ▾」
+        status = ttk.Frame(self.root, style="Status.TFrame", height=40)
+        status.pack(fill=X, side=BOTTOM)
+        status.pack_propagate(False)
 
-        ttk.Button(bottom, text="💾 保存修改", bootstyle=SUCCESS,
-                   command=self._save_all).pack(side=RIGHT, padx=5)
-        ttk.Button(bottom, text="↩ 恢复备份", bootstyle=WARNING,
-                   command=self._restore_backup).pack(side=RIGHT, padx=5)
-        ttk.Button(bottom, text="📦 手动备份", bootstyle=SECONDARY,
-                   command=self._manual_backup).pack(side=RIGHT, padx=5)
+        status_line = tk.Frame(self.root, background=UI_BORDER, height=1)
+        status_line.pack(fill=X, side=BOTTOM)
+
+        status_inner = ttk.Frame(status, style="Status.TFrame")
+        status_inner.pack(fill=BOTH, expand=True, padx=SPACE_OUTER)
+
+        self.status_var = tk.StringVar(value="就绪")
+        ttk.Label(
+            status_inner, textvariable=self.status_var, style="Muted.TLabel",
+        ).pack(side=LEFT, pady=10)
+
+        backup_btn = ttk.Menubutton(
+            status_inner, text="备份 ▾", style="Backup.TMenubutton",
+        )
+        backup_menu = tk.Menu(backup_btn, tearoff=0, font=(UI_FONT, 10))
+        backup_menu.add_command(label="手动备份", command=self._manual_backup)
+        backup_menu.add_command(label="恢复备份", command=self._restore_backup)
+        backup_btn.configure(menu=backup_menu)
+        backup_btn.pack(side=RIGHT, pady=7)
+
+        self._update_slot_buttons()
+        self._update_path_label()
+
+    def _update_path_label(self):
+        if not hasattr(self, "path_label"):
+            return
+        path = self.save_folder.get().strip()
+        self.path_label.configure(
+            text=_shorten_path(path) if path else "未选择存档文件夹",
+        )
+
+    def _update_slot_buttons(self):
+        if not getattr(self, "_slot_buttons", None):
+            return
+        current = self.cur_slot.get()
+        for i, btn in enumerate(self._slot_buttons):
+            btn.configure(
+                style="SlotActive.TButton" if i == current else "Slot.TButton",
+            )
+
+    def _on_slot_clicked(self, slot: int):
+        if slot == self.cur_slot.get():
+            self._update_slot_buttons()
+            return
+        self.cur_slot.set(slot)
+        self._update_slot_buttons()
+        self._switch_slot()
+        self._update_slot_buttons()
 
     # ======================== 金币 Tab ========================
 
     def _build_money_tab(self):
-        frame = ttk.Frame(self.money_tab)
-        frame.pack(expand=True)
+        center = ttk.Frame(self.money_tab, style="Card.TFrame")
+        center.pack(expand=True)
 
-        ttk.Label(frame, text="当前金币", font=("Microsoft YaHei", 11)).pack(pady=5)
-        self.money_label = ttk.Label(frame, text="尚未加载存档", font=("Microsoft YaHei", 24, "bold"))
-        self.money_label.pack(pady=5)
+        ttk.Label(
+            center, text="当前金币", style="Field.TLabel",
+        ).pack(pady=(0, 6))
 
-        row = ttk.Frame(frame)
-        row.pack(pady=10)
-        ttk.Label(row, text="新数值:").pack(side=LEFT, padx=5)
-        self.money_entry = ttk.Entry(row, width=15)
-        self.money_entry.pack(side=LEFT, padx=5)
-        ttk.Button(row, text="修改", bootstyle=PRIMARY, command=self._set_money).pack(side=LEFT, padx=5)
+        self.money_label = ttk.Label(
+            center, text="尚未加载存档", style="Money.TLabel",
+        )
+        self.money_label.pack(pady=(0, 20))
 
-        ttk.Label(frame, text=f"范围: 0 ~ {MAX_MONEY:,}", font=("Microsoft YaHei", 8)).pack()
+        row = ttk.Frame(center, style="Card.TFrame")
+        row.pack()
+        self.money_entry = ttk.Entry(
+            row, width=14, justify=CENTER, font=(UI_FONT, 11),
+        )
+        self.money_entry.pack(side=LEFT, padx=(0, SPACE_INLINE))
+        ttk.Button(
+            row, text="设为", style="Primary.TButton",
+            command=self._set_money,
+        ).pack(side=LEFT, padx=(0, SPACE_INLINE))
+        ttk.Button(
+            row, text="填满最大", style="Ghost.TButton",
+            command=self._fill_max_money,
+        ).pack(side=LEFT)
+
+        ttk.Label(
+            center, text=f"可设置范围 0 ~ {MAX_MONEY:,} G", style="Muted.TLabel",
+        ).pack(pady=(SPACE_BLOCK, 0))
 
     # ======================== 道具 Tab ========================
 
     def _build_item_tab(self):
-        # 搜索栏
-        search_frame = ttk.Frame(self.item_tab)
-        search_frame.pack(fill=X, pady=(0, 5))
-        ttk.Label(search_frame, text="🔍").pack(side=LEFT, padx=(0, 5))
-        self.item_search_var = tk.StringVar()
-        self.item_search_var.trace_add('write', lambda *_: self._refresh_items())
-        ttk.Entry(search_frame, textvariable=self.item_search_var, width=25).pack(side=LEFT, padx=5)
+        # 顶部：搜索 / 分类 / 显示全部 + 右侧添加道具
+        top = ttk.Frame(self.item_tab, style="Card.TFrame")
+        top.pack(fill=X, pady=(0, SPACE_BLOCK))
 
-        ttk.Label(search_frame, text="分类:").pack(side=LEFT, padx=(10, 5))
+        ttk.Label(top, text="搜索", style="Field.TLabel").pack(side=LEFT)
+        self.item_search_var = tk.StringVar()
+        ttk.Entry(
+            top, textvariable=self.item_search_var, width=22,
+        ).pack(side=LEFT, padx=(6, SPACE_BLOCK))
+        self.item_search_var.trace_add("write", lambda *_: self._refresh_items())
+
+        ttk.Label(top, text="分类", style="Field.TLabel").pack(side=LEFT)
         self.item_cat_var = tk.StringVar(value="全部")
         cats = ["全部"] + list(CATEGORY_ORDER)
-        cb = ttk.Combobox(search_frame, textvariable=self.item_cat_var, values=cats, width=15, state="readonly")
-        cb.pack(side=LEFT, padx=5)
-        cb.bind('<<ComboboxSelected>>', lambda e: self._refresh_items())
+        cat_cb = ttk.Combobox(
+            top, textvariable=self.item_cat_var, values=cats,
+            width=12, state="readonly",
+        )
+        cat_cb.pack(side=LEFT, padx=(6, SPACE_BLOCK))
+        cat_cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_items())
 
         self.show_all_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(search_frame, text="显示全部", variable=self.show_all_var,
-                       command=self._refresh_items).pack(side=RIGHT, padx=5)
+        ttk.Checkbutton(
+            top, text="显示全部", variable=self.show_all_var,
+            command=self._refresh_items,
+        ).pack(side=LEFT)
 
-        # 道具列表
-        cols = ("名称", "数量", "ID")
-        self.item_tree = ttk.Treeview(self.item_tab, columns=cols, show="headings", height=18)
-        self.item_tree.heading("名称", text="名称")
-        self.item_tree.heading("数量", text="数量")
-        self.item_tree.heading("ID", text="ID")
-        self.item_tree.column("名称", width=300)
-        self.item_tree.column("数量", width=80, anchor=CENTER)
-        self.item_tree.column("ID", width=100, anchor=CENTER)
-        self.item_tree.pack(fill=BOTH, expand=True, pady=5)
-
-        # 滚动条
-        scrollbar = ttk.Scrollbar(self.item_tree, orient=VERTICAL, command=self.item_tree.yview)
-        self.item_tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=RIGHT, fill=Y)
-
-        # 操作按钮
-        btn_frame = ttk.Frame(self.item_tab)
-        btn_frame.pack(fill=X, pady=5)
-
-        self.item_amount_var = tk.StringVar(value="1")
-        ttk.Label(btn_frame, text="数量:").pack(side=LEFT, padx=5)
-        ttk.Entry(btn_frame, textvariable=self.item_amount_var, width=8).pack(side=LEFT, padx=5)
-
-        ttk.Button(btn_frame, text="➕ 增加", bootstyle=SUCCESS,
-                   command=lambda: self._mod_item(1)).pack(side=LEFT, padx=3)
-        ttk.Button(btn_frame, text="➖ 减少", bootstyle=DANGER,
-                   command=lambda: self._mod_item(-1)).pack(side=LEFT, padx=3)
-        ttk.Button(btn_frame, text="✏ 设数量", bootstyle=INFO,
-                   command=lambda: self._mod_item(0)).pack(side=LEFT, padx=3)
-
-        # 添加新道具
-        add_frame = ttk.Frame(self.item_tab)
-        add_frame.pack(fill=X, pady=5)
-        ttk.Label(add_frame, text="添加道具:").pack(side=LEFT, padx=5)
+        # 右侧：先 pack 的靠最右
+        ttk.Button(
+            top, text="添加", style="Success.TButton",
+            command=self._add_item,
+        ).pack(side=RIGHT)
         self.item_add_var = tk.StringVar()
         all_items = sorted(ITEM_NAMES.items(), key=lambda x: x[1])
         item_names = [f"{n} (0x{i:04X})" for i, n in all_items]
-        self.item_add_cb = ttk.Combobox(add_frame, textvariable=self.item_add_var,
-                                        values=item_names, width=35, state="readonly")
-        self.item_add_cb.pack(side=LEFT, padx=5)
-        ttk.Button(add_frame, text="添加", bootstyle=SUCCESS,
-                   command=self._add_item).pack(side=LEFT, padx=5)
+        self.item_add_cb = ttk.Combobox(
+            top, textvariable=self.item_add_var, values=item_names,
+            width=30, state="readonly",
+        )
+        self.item_add_cb.pack(side=RIGHT, padx=(SPACE_INLINE, SPACE_INLINE))
+        ttk.Label(top, text="添加道具", style="Field.TLabel").pack(side=RIGHT)
+
+        # 中间：列表
+        list_wrap = ttk.Frame(self.item_tab, style="Card.TFrame")
+        list_wrap.pack(fill=BOTH, expand=True)
+        cols = ("名称", "数量", "ID")
+        self.item_tree = ttk.Treeview(
+            list_wrap, columns=cols, show="headings", height=10,
+            selectmode="browse",
+        )
+        self.item_tree.heading("名称", text="名称")
+        self.item_tree.heading("数量", text="数量")
+        self.item_tree.heading("ID", text="ID")
+        self.item_tree.column("名称", width=340, anchor="w")
+        self.item_tree.column("数量", width=90, anchor=CENTER)
+        self.item_tree.column("ID", width=110, anchor=CENTER)
+        self.item_tree.pack(side=LEFT, fill=BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(
+            list_wrap, orient=VERTICAL, command=self.item_tree.yview,
+        )
+        self.item_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=RIGHT, fill=Y)
+
+        # 底部：数量操作
+        bottom = ttk.Frame(self.item_tab, style="Card.TFrame")
+        bottom.pack(fill=X, pady=(SPACE_BLOCK, 0))
+
+        self.item_amount_var = tk.StringVar(value="1")
+        ttk.Label(bottom, text="数量", style="Field.TLabel").pack(side=LEFT)
+        ttk.Entry(
+            bottom, textvariable=self.item_amount_var, width=8,
+            justify=CENTER,
+        ).pack(side=LEFT, padx=(6, SPACE_INLINE))
+        ttk.Button(
+            bottom, text="增加", style="Ghost.TButton",
+            command=lambda: self._mod_item(1),
+        ).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(
+            bottom, text="减少", style="Ghost.TButton",
+            command=lambda: self._mod_item(-1),
+        ).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(
+            bottom, text="设为", style="Primary.TButton",
+            command=lambda: self._mod_item(0),
+        ).pack(side=LEFT)
+
+        ttk.Button(
+            bottom, text="尸体背包（只读）", style="Link.TButton",
+            command=self._open_corpse_window,
+        ).pack(side=RIGHT)
 
     # ======================== 武器 Tab ========================
 
     def _build_weapon_tab(self):
-        ttk.Label(
-            self.weapon_tab,
-            text=f"武器表：{WEAPONS_COUNT} 条 × {WEAPON_RECORD_SIZE}B"
-                 f"（0x{WEAPONS_START:X}），id == -1 为空槽",
-            font=("Microsoft YaHei", 9),
-        ).pack(anchor="w", pady=(0, 5))
+        # 顶部：已获得计数
+        head = ttk.Frame(self.weapon_tab, style="Card.TFrame")
+        head.pack(fill=X, pady=(0, SPACE_INLINE))
+        ttk.Label(head, text="已获得", style="Field.TLabel").pack(side=LEFT)
+        self.weapon_count_label = ttk.Label(
+            head, text=f"0 / {WEAPONS_COUNT}", style="Count.TLabel",
+        )
+        self.weapon_count_label.pack(side=LEFT, padx=(6, 0))
 
+        # 中间：列表
+        list_wrap = ttk.Frame(self.weapon_tab, style="Card.TFrame")
+        list_wrap.pack(fill=BOTH, expand=True)
         cols = ("名称", "等级", "状态", "ID")
-        self.weapon_tree = ttk.Treeview(self.weapon_tab, columns=cols,
-                                        show="headings", height=18)
+        self.weapon_tree = ttk.Treeview(
+            list_wrap, columns=cols, show="headings", height=10,
+            selectmode="browse",
+        )
         self.weapon_tree.heading("名称", text="名称")
         self.weapon_tree.heading("等级", text="等级")
         self.weapon_tree.heading("状态", text="状态")
         self.weapon_tree.heading("ID", text="ID")
-        self.weapon_tree.column("名称", width=300)
-        self.weapon_tree.column("等级", width=70, anchor=CENTER)
-        self.weapon_tree.column("状态", width=90, anchor=CENTER)
-        self.weapon_tree.column("ID", width=100, anchor=CENTER)
-        self.weapon_tree.pack(fill=BOTH, expand=True, pady=5)
+        self.weapon_tree.column("名称", width=340, anchor="w")
+        self.weapon_tree.column("等级", width=80, anchor=CENTER)
+        self.weapon_tree.column("状态", width=100, anchor=CENTER)
+        self.weapon_tree.column("ID", width=110, anchor=CENTER)
+        self.weapon_tree.pack(side=LEFT, fill=BOTH, expand=True)
 
-        scrollbar = ttk.Scrollbar(self.weapon_tree, orient=VERTICAL,
-                                  command=self.weapon_tree.yview)
+        scrollbar = ttk.Scrollbar(
+            list_wrap, orient=VERTICAL, command=self.weapon_tree.yview,
+        )
         self.weapon_tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=RIGHT, fill=Y)
 
-        level_frame = ttk.Frame(self.weapon_tab)
-        level_frame.pack(fill=X, pady=5)
-        ttk.Label(level_frame, text="等级 (1-4):").pack(side=LEFT, padx=5)
+        # 底部：等级 + 添加 / 删除
+        bar = ttk.Frame(self.weapon_tab, style="Card.TFrame")
+        bar.pack(fill=X, pady=(SPACE_BLOCK, 0))
+
+        ttk.Label(bar, text="等级 1-4", style="Field.TLabel").pack(side=LEFT)
         self.weapon_level_var = tk.IntVar(value=1)
         self.weapon_level_spin = ttk.Spinbox(
-            level_frame, from_=WEAPON_LEVEL_MIN, to=WEAPON_LEVEL_MAX,
-            textvariable=self.weapon_level_var, width=5,
+            bar, from_=WEAPON_LEVEL_MIN, to=WEAPON_LEVEL_MAX,
+            textvariable=self.weapon_level_var, width=4, justify=CENTER,
         )
-        self.weapon_level_spin.pack(side=LEFT, padx=5)
-        ttk.Button(level_frame, text="✏ 设置等级", bootstyle=INFO,
-                   command=self._set_weapon_level).pack(side=LEFT, padx=3)
-        ttk.Button(level_frame, text="🗑 删除选中", bootstyle=DANGER,
-                   command=self._remove_weapon).pack(side=LEFT, padx=3)
-        self.weapon_count_label = ttk.Label(level_frame, text="0 / 39",
-                                            font=("Microsoft YaHei", 9))
-        self.weapon_count_label.pack(side=RIGHT, padx=5)
+        self.weapon_level_spin.pack(side=LEFT, padx=(6, SPACE_INLINE))
+        ttk.Button(
+            bar, text="保存等级", style="Primary.TButton",
+            command=self._set_weapon_level,
+        ).pack(side=LEFT)
 
-        add_frame = ttk.Frame(self.weapon_tab)
-        add_frame.pack(fill=X, pady=5)
-        ttk.Label(add_frame, text="添加武器:").pack(side=LEFT, padx=5)
+        ttk.Separator(bar, orient=VERTICAL).pack(
+            side=LEFT, fill=Y, padx=SPACE_OUTER, pady=2,
+        )
+
         self.weapon_add_var = tk.StringVar()
         weapon_names = [f"{n} (0x{i:04X})"
                         for i, n in sorted(WEAPON_NAMES.items(), key=lambda x: x[1])]
         self.weapon_add_cb = ttk.Combobox(
-            add_frame, textvariable=self.weapon_add_var,
-            values=weapon_names, width=35, state="readonly",
+            bar, textvariable=self.weapon_add_var,
+            values=weapon_names, width=26, state="readonly",
         )
-        self.weapon_add_cb.pack(side=LEFT, padx=5)
-        ttk.Button(add_frame, text="添加", bootstyle=SUCCESS,
-                   command=self._add_weapon).pack(side=LEFT, padx=5)
+        self.weapon_add_cb.pack(side=LEFT, padx=(0, SPACE_INLINE))
+        ttk.Button(
+            bar, text="添加", style="Success.TButton",
+            command=self._add_weapon,
+        ).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(
+            bar, text="删除", style="Danger.TButton",
+            command=self._remove_weapon,
+        ).pack(side=LEFT)
 
-    # ======================== 尸体背包 Tab（只读） ========================
+    # ======================== 尸体背包（只读弹窗） ========================
 
-    def _build_corpse_tab(self):
+    def _open_corpse_window(self):
+        """四 tab 之外的只读尸体背包，按需打开，不占用主界面。"""
+        win = self._corpse_window
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    win.lift()
+                    win.focus_set()
+                    return
+            except Exception:
+                pass
+
+        win = tk.Toplevel(self.root)
+        self._corpse_window = win
+        win.title("尸体背包（只读）")
+        win.geometry("640x480")
+        win.minsize(520, 360)
+        win.configure(background=UI_BG)
+        try:
+            win.transient(self.root)
+        except Exception:
+            pass
+
+        card = ttk.Frame(win, style="Card.TFrame", padding=16)
+        card.pack(fill=BOTH, expand=True, padx=SPACE_OUTER, pady=SPACE_OUTER)
+
+        head = ttk.Frame(card, style="Card.TFrame")
+        head.pack(fill=X, pady=(0, SPACE_INLINE))
         ttk.Label(
-            self.corpse_tab,
-            text=f"尸体背包：{CORPSE_ITEMS_COUNT} 条 × {ITEM_RECORD_SIZE}B"
-                 f"（0x{CORPSE_ITEMS_START:X}），独立区域，只读展示，不参与保存",
-            font=("Microsoft YaHei", 9),
-        ).pack(anchor="w", pady=(0, 5))
+            head, text="尸体背包（只读）", style="Section.TLabel",
+        ).pack(side=LEFT)
+        self.corpse_count_label = ttk.Label(
+            head, text="0 条", style="Count.TLabel",
+        )
+        self.corpse_count_label.pack(side=RIGHT)
+
+        list_wrap = ttk.Frame(card, style="Card.TFrame")
+        list_wrap.pack(fill=BOTH, expand=True)
         cols = ("名称", "数量", "ID")
-        self.corpse_tree = ttk.Treeview(self.corpse_tab, columns=cols,
-                                        show="headings", height=18)
+        self.corpse_tree = ttk.Treeview(
+            list_wrap, columns=cols, show="headings", height=12,
+            selectmode="browse",
+        )
         self.corpse_tree.heading("名称", text="名称")
         self.corpse_tree.heading("数量", text="数量")
         self.corpse_tree.heading("ID", text="ID")
-        self.corpse_tree.column("名称", width=300)
-        self.corpse_tree.column("数量", width=80, anchor=CENTER)
-        self.corpse_tree.column("ID", width=100, anchor=CENTER)
-        self.corpse_tree.pack(fill=BOTH, expand=True, pady=5)
-        self.corpse_count_label = ttk.Label(self.corpse_tab, text="0 条",
-                                            font=("Microsoft YaHei", 9))
-        self.corpse_count_label.pack(anchor="e")
+        self.corpse_tree.column("名称", width=300, anchor="w")
+        self.corpse_tree.column("数量", width=90, anchor=CENTER)
+        self.corpse_tree.column("ID", width=110, anchor=CENTER)
+        self.corpse_tree.pack(side=LEFT, fill=BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(
+            list_wrap, orient=VERTICAL, command=self.corpse_tree.yview,
+        )
+        self.corpse_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=RIGHT, fill=Y)
+
+        win.protocol("WM_DELETE_WINDOW", self._close_corpse_window)
+        self._refresh_corpse()
+
+    def _close_corpse_window(self):
+        try:
+            if self._corpse_window is not None:
+                self._corpse_window.destroy()
+        except Exception:
+            pass
+        self._corpse_window = None
+        self.corpse_tree = None
+        self.corpse_count_label = None
 
     # ======================== 芯片 Tab ========================
 
     def _build_chip_tab(self):
-        # 搜索 + 分类
-        search_frame = ttk.Frame(self.chip_tab)
-        search_frame.pack(fill=X, pady=(0, 5))
-        ttk.Label(search_frame, text="🔍").pack(side=LEFT, padx=(0, 5))
-        self.chip_search_var = tk.StringVar()
-        self.chip_search_var.trace_add('write', lambda *_: self._refresh_chips())
-        ttk.Entry(search_frame, textvariable=self.chip_search_var, width=25).pack(side=LEFT, padx=5)
+        # 顶部：搜索 / 分类 + 右侧已装计数
+        top = ttk.Frame(self.chip_tab, style="Card.TFrame")
+        top.pack(fill=X, pady=(0, SPACE_BLOCK))
 
-        ttk.Label(search_frame, text="分类:").pack(side=LEFT, padx=(10, 5))
+        ttk.Label(top, text="搜索", style="Field.TLabel").pack(side=LEFT)
+        self.chip_search_var = tk.StringVar()
+        ttk.Entry(
+            top, textvariable=self.chip_search_var, width=22,
+        ).pack(side=LEFT, padx=(6, SPACE_BLOCK))
+        self.chip_search_var.trace_add("write", lambda *_: self._refresh_chips())
+
+        ttk.Label(top, text="分类", style="Field.TLabel").pack(side=LEFT)
         self.chip_cat_var = tk.StringVar(value="全部")
         chip_cats = ["全部", "攻击", "防御", "辅助", "HUD", "特殊"]
-        cb = ttk.Combobox(search_frame, textvariable=self.chip_cat_var, values=chip_cats, width=12, state="readonly")
-        cb.pack(side=LEFT, padx=5)
-        cb.bind('<<ComboboxSelected>>', lambda e: self._refresh_chips())
+        cat_cb = ttk.Combobox(
+            top, textvariable=self.chip_cat_var, values=chip_cats,
+            width=10, state="readonly",
+        )
+        cat_cb.pack(side=LEFT, padx=(6, 0))
+        cat_cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_chips())
 
-        ttk.Label(search_frame, text="已装芯片:", font=("Microsoft YaHei", 9)).pack(side=RIGHT)
-        self.chip_count_label = ttk.Label(search_frame, text="0", font=("Microsoft YaHei", 9))
+        self.chip_count_label = ttk.Label(
+            top, text=f"0 / {CHIPS_COUNT}", style="Count.TLabel",
+        )
         self.chip_count_label.pack(side=RIGHT)
+        ttk.Label(top, text="已装", style="Field.TLabel").pack(
+            side=RIGHT, padx=(0, 6),
+        )
 
-        # 芯片列表
+        # 中间：列表
+        list_wrap = ttk.Frame(self.chip_tab, style="Card.TFrame")
+        list_wrap.pack(fill=BOTH, expand=True)
         cols = ("名称", "等级", "格数", "效果")
-        self.chip_tree = ttk.Treeview(self.chip_tab, columns=cols, show="headings", height=16)
+        self.chip_tree = ttk.Treeview(
+            list_wrap, columns=cols, show="headings", height=10,
+            selectmode="browse",
+        )
         self.chip_tree.heading("名称", text="名称")
         self.chip_tree.heading("等级", text="等级")
         self.chip_tree.heading("格数", text="格数")
         self.chip_tree.heading("效果", text="效果")
-        self.chip_tree.column("名称", width=300)
-        self.chip_tree.column("等级", width=60, anchor=CENTER)
-        self.chip_tree.column("格数", width=50, anchor=CENTER)
-        self.chip_tree.column("效果", width=350)
-        self.chip_tree.pack(fill=BOTH, expand=True, pady=5)
+        self.chip_tree.column("名称", width=260, anchor="w")
+        self.chip_tree.column("等级", width=70, anchor=CENTER)
+        self.chip_tree.column("格数", width=60, anchor=CENTER)
+        self.chip_tree.column("效果", width=380, anchor="w")
+        self.chip_tree.pack(side=LEFT, fill=BOTH, expand=True)
 
-        scrollbar = ttk.Scrollbar(self.chip_tree, orient=VERTICAL, command=self.chip_tree.yview)
+        scrollbar = ttk.Scrollbar(
+            list_wrap, orient=VERTICAL, command=self.chip_tree.yview,
+        )
         self.chip_tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=RIGHT, fill=Y)
 
-        # 删除按钮
-        btn_frame = ttk.Frame(self.chip_tab)
-        btn_frame.pack(fill=X, pady=5)
-        ttk.Button(btn_frame, text="🗑 删除选中", bootstyle=DANGER,
-                   command=self._remove_chip).pack(side=LEFT, padx=5)
-
-        # 添加芯片
-        add_frame = ttk.Frame(self.chip_tab)
-        add_frame.pack(fill=X, pady=5)
-        ttk.Label(add_frame, text="添加芯片:").pack(side=LEFT, padx=5)
+        # 底部：芯片下拉 + 等级 + 添加 / 删除
+        bar = ttk.Frame(self.chip_tab, style="Card.TFrame")
+        bar.pack(fill=X, pady=(SPACE_BLOCK, 0))
 
         self.chip_add_var = tk.StringVar()
         common_names = sorted(CHIPS.common_names)
         unique_names = sorted(CHIPS.unique_names)
         all_chip_names = common_names + unique_names
-        self.chip_add_cb = ttk.Combobox(add_frame, textvariable=self.chip_add_var,
-                                        values=all_chip_names, width=25, state="readonly")
-        self.chip_add_cb.pack(side=LEFT, padx=5)
+        self.chip_add_cb = ttk.Combobox(
+            bar, textvariable=self.chip_add_var,
+            values=all_chip_names, width=26, state="readonly",
+        )
+        self.chip_add_cb.pack(side=LEFT, padx=(0, SPACE_INLINE))
         # 选中系统/唯一芯片时，等级由芯片本身固定，禁用等级输入并给出提示
-        self.chip_add_cb.bind('<<ComboboxSelected>>',
-                              lambda e: self._on_chip_add_selected())
+        self.chip_add_cb.bind(
+            "<<ComboboxSelected>>", lambda e: self._on_chip_add_selected(),
+        )
 
-        ttk.Label(add_frame, text="等级:").pack(side=LEFT, padx=(10, 5))
+        ttk.Label(bar, text="等级", style="Field.TLabel").pack(side=LEFT)
         self.chip_lv_var = tk.IntVar(value=0)
-        self.chip_lv_spin = ttk.Spinbox(add_frame, from_=0, to=8,
-                                        textvariable=self.chip_lv_var, width=5)
-        self.chip_lv_spin.pack(side=LEFT, padx=5)
-        self.chip_lv_hint = ttk.Label(add_frame, text="", font=("Microsoft YaHei", 8))
-        self.chip_lv_hint.pack(side=LEFT, padx=5)
+        self.chip_lv_spin = ttk.Spinbox(
+            bar, from_=0, to=8, textvariable=self.chip_lv_var,
+            width=4, justify=CENTER,
+        )
+        self.chip_lv_spin.pack(side=LEFT, padx=(6, SPACE_INLINE))
+        self.chip_lv_hint = ttk.Label(
+            bar, text="", style="Muted.TLabel",
+        )
+        self.chip_lv_hint.pack(side=LEFT, padx=(0, SPACE_INLINE))
 
-        ttk.Button(add_frame, text="添加", bootstyle=SUCCESS,
-                   command=self._add_chip).pack(side=LEFT, padx=5)
+        ttk.Button(
+            bar, text="添加", style="Success.TButton",
+            command=self._add_chip,
+        ).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(
+            bar, text="删除", style="Danger.TButton",
+            command=self._remove_chip,
+        ).pack(side=LEFT)
 
     # ======================== 数据加载 ========================
 
@@ -409,6 +843,7 @@ class NierSaveEditor:
 
     def _switch_slot(self):
         """切换存档位；用户确认丢弃修改时，必须把 GameData 从磁盘重新载入。"""
+        self._update_slot_buttons()
         if not self.gamedata:
             return
         new_slot = self.cur_slot.get()
@@ -417,6 +852,7 @@ class NierSaveEditor:
         if self._money_items_dirty or self._weapons_dirty or self._chips_dirty:
             if not messagebox.askyesno("未保存的修改", "当前有未保存的修改，切换存档位将丢失。\n继续吗？"):
                 self.cur_slot.set(self._loaded_slot)
+                self._update_slot_buttons()
                 return
             discard = True
 
@@ -430,6 +866,7 @@ class NierSaveEditor:
                 self.gamedata = SaveFile(gd_path)
             except Exception as e:
                 self.cur_slot.set(self._loaded_slot)
+                self._update_slot_buttons()
                 self.status_var.set("切换已取消：GameData 重新载入失败")
                 messagebox.showerror(
                     "切换失败",
@@ -458,6 +895,7 @@ class NierSaveEditor:
         self._refresh_weapons()
         self._refresh_corpse()
         self._refresh_chips()
+        self._update_slot_buttons()
 
     # ======================== 金币操作 ========================
 
@@ -476,19 +914,31 @@ class NierSaveEditor:
             self.money_label.config(text="读取失败")
             self.status_var.set(f"金币读取异常: {e}")
 
+    def _fill_max_money(self):
+        """把输入框填成金币上限并立即应用。"""
+        if not self.gamedata or not self.slotdata:
+            return
+        self.money_entry.delete(0, tk.END)
+        self.money_entry.insert(0, str(MAX_MONEY))
+        self._set_money()
+
     def _set_money(self):
         if not self.gamedata or not self.slotdata:
             return
         try:
-            val = int(self.money_entry.get())
-            # 同时写 GameData 和 SlotData 保持一致
-            self.gamedata.set_money(val)
-            self.slotdata.set_money(val)
-            self._money_items_dirty = True
-            self._refresh_money()
-            self.status_var.set(f"金币已设为 {val:,} G（未保存）")
-        except ValueError as e:
-            messagebox.showerror("输入错误", str(e))
+            val = int(self.money_entry.get().replace(",", "").strip())
+        except (ValueError, TypeError) as e:
+            messagebox.showerror("输入错误", f"金币必须是 0 ~ {MAX_MONEY:,} 的整数")
+            return
+        if not 0 <= val <= MAX_MONEY:
+            messagebox.showerror("输入错误", f"金币必须是 0 ~ {MAX_MONEY:,} 的整数")
+            return
+        # 同时写 GameData 和 SlotData 保持一致
+        self.gamedata.set_money(val)
+        self.slotdata.set_money(val)
+        self._money_items_dirty = True
+        self._refresh_money()
+        self.status_var.set(f"金币已设为 {val:,} G（未保存）")
 
     # ======================== 道具操作 ========================
 
@@ -642,26 +1092,33 @@ class NierSaveEditor:
             self.status_var.set(f"武器读取异常: {e}")
 
     def _refresh_corpse(self):
-        """只读展示 0x31170 起的尸体背包，绝不写入。"""
+        """只读展示 0x31170 起的尸体背包，绝不写入；弹窗未打开时直接跳过。"""
+        tree = getattr(self, "corpse_tree", None)
+        if tree is None:
+            return
+        label = getattr(self, "corpse_count_label", None)
         try:
             target = self.slotdata if self.slotdata else self.gamedata
             if not target:
-                for row in self.corpse_tree.get_children():
-                    self.corpse_tree.delete(row)
+                for row in tree.get_children():
+                    tree.delete(row)
+                if label is not None:
+                    label.config(text="0 条")
                 return
-            for row in self.corpse_tree.get_children():
-                self.corpse_tree.delete(row)
+            for row in tree.get_children():
+                tree.delete(row)
             count = 0
             for i, (iid, amt) in enumerate(target.get_corpse_items()):
                 if amt <= 0 or iid == ITEM_EMPTY_ID:
                     continue
                 count += 1
-                self.corpse_tree.insert(
+                tree.insert(
                     "", END,
                     values=(get_item_name(iid), amt, f"0x{iid:04X}"),
                     tags=(str(i),),
                 )
-            self.corpse_count_label.config(text=f"{count} 条")
+            if label is not None:
+                label.config(text=f"{count} 条")
         except Exception as e:
             self.status_var.set(f"尸体背包读取异常: {e}")
 
@@ -942,7 +1399,7 @@ class NierSaveEditor:
             f"SlotData 备份: {os.path.basename(sd_backup)}"
         )
         messagebox.showinfo("成功", msg)
-        self.status_var.set(f"已保存 {slot_file} ✓")
+        self.status_var.set(f"已保存 {slot_file}")
         # 重置脏标记
         self._money_items_dirty = False
         self._weapons_dirty = False
@@ -1042,7 +1499,7 @@ class NierSaveEditor:
         self._weapons_dirty = False
         self._chips_dirty = False
         self._refresh()
-        self.status_var.set("已从备份恢复 ✓")
+        self.status_var.set("已从备份恢复")
         messagebox.showinfo(
             "成功",
             f"已从备份恢复存档。\n恢复前快照：{os.path.basename(snap_gd)} / "

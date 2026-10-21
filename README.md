@@ -1,6 +1,6 @@
-# NieR:Automata Save Editor 🎮
+# 尼尔存档修改器
 
-> **《尼尔：机械纪元》存档修改器** — 图形界面修改金币、道具、芯片，即改即用
+> **NieR:Automata Save Editor** — 图形界面修改金币、道具、武器、芯片，即改即用
 
 [![GitHub release](https://img.shields.io/github/v/release/1jiulaoye/nieR-automata-save-editor)](https://github.com/1jiulaoye/nieR-automata-save-editor/releases)
 [![下载量](https://img.shields.io/github/downloads/1jiulaoye/nieR-automata-save-editor/total)](https://github.com/1jiulaoye/nieR-automata-save-editor/releases)
