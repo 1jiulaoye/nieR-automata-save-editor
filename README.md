@@ -78,6 +78,7 @@
 
 | 文件 | 大小 | 下载 |
 |------|------|------|
+| `nier-save-editor-v1.4-win64-portable.zip`（**绿色版，推荐**：用官方签名的 pythonw 启动，绕开 Smart App Control） | ~22 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.0/nier-save-editor-v1.4-win64-portable.zip) |
 | `nier-save-editor-v1.4-win64.zip`（单文件） | ~20 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.0/nier-save-editor-v1.4-win64.zip) |
 | `nier-save-editor-v1.4-win64-onedir.zip`（目录版，被 Smart App Control 拦时试这个） | ~20 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.0/nier-save-editor-v1.4-win64-onedir.zip) |
 | 历史版本 | — | [Releases](https://github.com/1jiulaoye/nieR-automata-save-editor/releases) |
@@ -186,10 +187,13 @@ $ python3 selftest.py
 ### ❓ 双击没反应 / 被「智能应用控制（Smart App Control）」拦了？
 Win11 的 Smart App Control 只放行有数字签名的程序，PyInstaller 打包的 exe 一律拦，而且**没有白名单**，弹窗里也没有“仍要运行”。三条路：
 
-1. **关掉 SAC**：设置 → 隐私和安全性 → Windows 安全中心 → 应用和浏览器控制 → 智能应用控制 → 关闭
+1. **用绿色版**（推荐，不用动 SAC）：下载 `-portable` 那个包，双击里面的「启动.bat」。它用 Python 官方的 `pythonw.exe`（有微软信任的签名）来跑程序，SAC 会当成 Python 运行时放行
+2. **换目录版**：下载 `-onedir` 那个包，解压后双击 `nier-save-editor.exe`。目录版不会先把自己解压到 `%TEMP%` 再执行，触发条件少一层（但不保证一定过）
+3. **关掉 SAC**：设置 → 隐私和安全性 → Windows 安全中心 → 应用和浏览器控制 → 智能应用控制 → 关闭
    ⚠️ 注意：SAC 关掉后只能重装系统才能再打开，自己权衡
-2. **换目录版**：下载 `-onedir` 那个包，解压后双击里面的 `nier-save-editor.exe`。目录版不会先把自己解压到 `%TEMP%` 再执行，触发条件少一层（但不保证一定过）
-3. **从源码跑**（最稳）：装 Python 3.11+，`pip install "ttkbootstrap>=1.10,<3"`，然后 `python nier_editor.py`。`python.exe` 是官方签名的，SAC 一般不拦
+4. **从源码跑**：装 Python 3.11+，`pip install "ttkbootstrap>=1.10,<3"`，然后 `python nier_editor.py`
+
+关于自签名：技术上能做（自签证书 + signtool），但 SAC / SmartScreen 只信任微软信任链里的 CA，自签证书不在其中；就算用户手动把证书装进“受信任的根证书颁发机构”，SAC 依然会拦。所以只有买 CA 证书才有用。
 
 长期唯一的“正规”解法是买代码签名证书（受信任 CA，一年几百到几千元），不会为了免费工具去做。
 
