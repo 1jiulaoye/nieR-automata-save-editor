@@ -78,7 +78,8 @@
 
 | 文件 | 大小 | 下载 |
 |------|------|------|
-| `nier-save-editor-v1.4-win64.zip` | ~20 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.0/nier-save-editor-v1.4-win64.zip) |
+| `nier-save-editor-v1.4-win64.zip`（单文件） | ~20 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.0/nier-save-editor-v1.4-win64.zip) |
+| `nier-save-editor-v1.4-win64-onedir.zip`（目录版，被 Smart App Control 拦时试这个） | ~20 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.0/nier-save-editor-v1.4-win64-onedir.zip) |
 | 历史版本 | — | [Releases](https://github.com/1jiulaoye/nieR-automata-save-editor/releases) |
 
 > **系统要求**：Windows 8.1 / 10 / 11（64 位）
@@ -181,6 +182,16 @@ $ python3 selftest.py
 
 ### ❓ 会被封号吗？
 《尼尔：机械纪元》是单机游戏，没有反作弊系统，改存档不会封号。但仍建议先自己通关一遍再用。
+
+### ❓ 双击没反应 / 被「智能应用控制（Smart App Control）」拦了？
+Win11 的 Smart App Control 只放行有数字签名的程序，PyInstaller 打包的 exe 一律拦，而且**没有白名单**，弹窗里也没有“仍要运行”。三条路：
+
+1. **关掉 SAC**：设置 → 隐私和安全性 → Windows 安全中心 → 应用和浏览器控制 → 智能应用控制 → 关闭
+   ⚠️ 注意：SAC 关掉后只能重装系统才能再打开，自己权衡
+2. **换目录版**：下载 `-onedir` 那个包，解压后双击里面的 `nier-save-editor.exe`。目录版不会先把自己解压到 `%TEMP%` 再执行，触发条件少一层（但不保证一定过）
+3. **从源码跑**（最稳）：装 Python 3.11+，`pip install "ttkbootstrap>=1.10,<3"`，然后 `python nier_editor.py`。`python.exe` 是官方签名的，SAC 一般不拦
+
+长期唯一的“正规”解法是买代码签名证书（受信任 CA，一年几百到几千元），不会为了免费工具去做。
 
 ### ❓ 支持哪些游戏版本？
 Steam 版、Microsoft Store / Game Pass 版都可以，理论上所有 PC 版通用。
