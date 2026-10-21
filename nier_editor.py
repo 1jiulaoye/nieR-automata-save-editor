@@ -5,7 +5,6 @@ GUI 主界面 — ttkbootstrap 暗色主题
 """
 
 import os
-import shutil
 
 import tkinter as tk
 from tkinter import messagebox
@@ -16,7 +15,10 @@ import ttkbootstrap as ttk          # bootstyle 只对 ttkbootstrap 的控件生
 from ttkbootstrap.constants import *
 
 from constants import *
-from save_io import SaveFile, SaveError
+from save_io import (
+    SaveFile, SaveError, new_operation_id, find_backup_pairs,
+    replace_files_atomically,
+)
 from item_data import ITEM_NAMES, CATEGORY_ORDER, get_item_name, get_category, is_weapon
 from chip_data import REGISTRY as CHIPS
 from chip_data import CHIP_EFFECTS, CHIP_RECORD_SIZE
@@ -304,16 +306,37 @@ class NierSaveEditor:
             messagebox.showerror("加载失败", str(e))
 
     def _switch_slot(self):
-        """切换存档位"""
+        """切换存档位；用户确认丢弃修改时，必须把 GameData 从磁盘重新载入。"""
         if not self.gamedata:
             return
         new_slot = self.cur_slot.get()
         # 检查未保存修改
+        discard = False
         if self._money_items_dirty or self._chips_dirty:
             if not messagebox.askyesno("未保存的修改", "当前有未保存的修改，切换存档位将丢失。\n继续吗？"):
                 self.cur_slot.set(self._loaded_slot)
                 return
+            discard = True
+
         folder = self.save_folder.get()
+        gd_path = os.path.join(folder, GAMEDATA_FILE)
+
+        # A1：确认丢弃后，从磁盘重新载入 GameData，清掉旧槽位的内存修改。
+        # 载入失败则取消切换，保持原存档位与原对象不变。
+        if discard:
+            try:
+                self.gamedata = SaveFile(gd_path)
+            except Exception as e:
+                self.cur_slot.set(self._loaded_slot)
+                self.status_var.set("切换已取消：GameData 重新载入失败")
+                messagebox.showerror(
+                    "切换失败",
+                    f"重新载入 {GAMEDATA_FILE} 失败，已取消切换：\n{e}"
+                )
+                return
+            self._money_items_dirty = False
+            self._chips_dirty = False
+
         slot_file = SLOT_FILES[new_slot]
         slot_path = os.path.join(folder, slot_file)
         self.slotdata = None
@@ -561,6 +584,11 @@ class NierSaveEditor:
 
     # ======================== 保存 / 恢复 ========================
 
+    def _backup_dir(self) -> str:
+        """保存/手动备份/恢复共用同一个备份目录（避免末尾分隔符导致分叉）。"""
+        folder = self.save_folder.get()
+        return os.path.abspath(os.path.join(folder, os.pardir, SAVE_FOLDER_NAME + "_backup"))
+
     def _save_all(self):
         if not self.gamedata:
             return
@@ -574,106 +602,191 @@ class NierSaveEditor:
             return
 
         folder = self.save_folder.get()
-        slot_file = SLOT_FILES[self.cur_slot.get()]
-        backup_dir = os.path.abspath(os.path.join(folder, "..", SAVE_FOLDER_NAME + "_backup"))
+        slot_index = self.cur_slot.get()
+        slot_file = SLOT_FILES[slot_index]
+        gd_path = os.path.join(folder, GAMEDATA_FILE)
+        sd_path = os.path.join(folder, slot_file)
+        backup_dir = self._backup_dir()
+        opid = new_operation_id()
+
+        gd_backup = sd_backup = None
+        prepared: list[SaveFile] = []
+        modified_before: dict[int, bool] = {}
         try:
-            # 备份
-            gd_backup = self.gamedata.backup(backup_dir)
-            sd_backup = self.slotdata.backup(backup_dir)
+            # A4：同一次保存的两个文件使用同一个 opid，写入同一份 manifest
+            gd_backup = self.gamedata.backup(backup_dir, opid=opid, slot=slot_index)
+            sd_backup = self.slotdata.backup(backup_dir, opid=opid, slot=slot_index)
 
             # 如果有金币/道具修改，以 SlotData 为权威同步回 GameData
             if self._money_items_dirty:
                 self.gamedata.sync_money_items_from(self.slotdata)
 
-            # 只写真正改动过的文件，避免无谓地重写另一个文件
-            written = []
-            if self.gamedata.modified:
-                self.gamedata.save()
-                written.append(GAMEDATA_FILE)
-            if self.slotdata.modified:
-                self.slotdata.save()
-                written.append(slot_file)
+            # A2：两个文件都只 stage，不碰 live 文件；全部成功后才 commit
+            for sf in (self.gamedata, self.slotdata):
+                modified_before[id(sf)] = sf.modified
+                if sf.modified:
+                    sf.prepare()
+                    prepared.append(sf)
 
-            msg = (
-                f"保存成功！已写入：{'、'.join(written) or '（无改动）'}\n"
-                f"GameData 备份: {os.path.basename(gd_backup)}\n"
-                f"SlotData 备份: {os.path.basename(sd_backup)}"
-            )
-            messagebox.showinfo("成功", msg)
-            self.status_var.set(f"已保存 {slot_file} ✓")
-            # 重置脏标记
-            self._money_items_dirty = False
-            self._chips_dirty = False
+            written = []
+            for sf in prepared:
+                sf.commit()
+                written.append(GAMEDATA_FILE if sf is self.gamedata else slot_file)
         except Exception as e:
-            messagebox.showerror("保存失败", str(e))
+            # 任一 stage/commit 失败：清理临时文件，并用保存前备份恢复现场
+            for sf in prepared:
+                sf.abort()
+            rollback_error = None
+            if gd_backup and sd_backup:
+                try:
+                    replace_files_atomically([(gd_backup, gd_path), (sd_backup, sd_path)])
+                except Exception as re:
+                    rollback_error = re
+            # 恢复内存中的 modified 标记，用户可以直接重试，不会静默丢修改
+            for sf in prepared:
+                try:
+                    sf._modified = modified_before.get(id(sf), True)
+                except Exception:
+                    pass
+            if rollback_error:
+                messagebox.showerror(
+                    "保存失败且回滚失败",
+                    f"{e}\n\n回滚也失败了：{rollback_error}\n"
+                    f"请手动用备份恢复：{backup_dir}"
+                )
+            else:
+                messagebox.showerror(
+                    "保存失败",
+                    f"{e}\n\n未写入任何文件，已用保存前备份恢复现场。"
+                )
+            return
+
+        msg = (
+            f"保存成功！已写入：{'、'.join(written) or '（无改动）'}\n"
+            f"GameData 备份: {os.path.basename(gd_backup)}\n"
+            f"SlotData 备份: {os.path.basename(sd_backup)}"
+        )
+        messagebox.showinfo("成功", msg)
+        self.status_var.set(f"已保存 {slot_file} ✓")
+        # 重置脏标记
+        self._money_items_dirty = False
+        self._chips_dirty = False
 
     def _restore_backup(self):
-        folder = self.save_folder.get()
-        backup_dir = os.path.join(os.path.dirname(folder), SAVE_FOLDER_NAME + "_backup")
+        backup_dir = self._backup_dir()
         if not os.path.isdir(backup_dir):
             messagebox.showwarning("无备份", "未找到备份文件夹")
             return
 
-        # 找出所有 backup 文件名，取最新的 GameData 和 SlotData
-        backups = sorted([f for f in os.listdir(backup_dir) if f.endswith('.dat')], reverse=True)
-        if not backups:
-            messagebox.showwarning("无备份", "备份文件夹为空")
+        slot_index = self.cur_slot.get()
+        slot_file = SLOT_FILES[slot_index]
+        try:
+            # A4：只认同一 opid 且包含当前槽位 SlotData 的配对；旧备份按秒分组兜底
+            pairs = find_backup_pairs(backup_dir, slot_index)
+        except Exception as e:
+            messagebox.showerror("读取备份失败", str(e))
             return
-
-        # 按时间戳配对：必须 GameData 和当前存档位的 SlotData 出自同一次备份
-        import re
-        pat = re.compile(r'^(?P<base>.+)_(?P<ts>\d{8}_\d{6})\.dat$')
-        groups: dict[str, dict[str, str]] = {}
-        for f in backups:
-            m = pat.match(f)
-            if m:
-                groups.setdefault(m.group('ts'), {})[m.group('base')] = f
-
-        slot_file = SLOT_FILES[self.cur_slot.get()]
-        slot_base = slot_file.replace('.dat', '')
-        pairs = [
-            (ts, files) for ts, files in sorted(groups.items(), reverse=True)
-            if 'GameData' in files and slot_base in files
-        ]
         if not pairs:
             messagebox.showwarning(
                 "无可用备份",
-                f"备份文件夹里没有「GameData + {slot_file}」成对的备份，无法安全恢复。"
+                f"备份文件夹里没有与「GameData + {slot_file}」同一次操作配对的安全备份。\n"
+                f"旧式备份必须同秒分组且包含当前槽位，配不上时已拒绝恢复，避免混搭。"
             )
             return
 
-        ts, files = pairs[0]
-        readable = ts.replace('_', ' ')
+        pair = pairs[0]
+        readable = pair.get("time") or pair["opid"]
         if not messagebox.askyesno(
             "恢复备份",
-            f"将把存档回滚到 {readable} 的那次备份：\n"
-            f"  {files['GameData']}\n  {files[slot_base]}\n\n确定吗？"
+            f"将把存档回滚到 {readable} 的那次备份（opid={pair['opid']}）：\n"
+            f"  {pair['gamedata_name']}\n  {pair['slotdata_name']}\n\n确定吗？"
         ):
             return
 
+        folder = self.save_folder.get()
+        gd_path = os.path.join(folder, GAMEDATA_FILE)
+        sd_path = os.path.join(folder, slot_file)
+        snap_gd = snap_sd = None
         try:
-            shutil.copy2(os.path.join(backup_dir, files['GameData']),
-                         os.path.join(folder, 'GameData.dat'))
-            shutil.copy2(os.path.join(backup_dir, files[slot_base]),
-                         os.path.join(folder, slot_file))
+            # A3：先用新机制给当前两个文件做一次成对快照备份
+            current_gd = SaveFile(gd_path)
+            current_sd = SaveFile(sd_path)
+            snap_opid = new_operation_id()
+            snap_gd = current_gd.backup(backup_dir, opid=snap_opid, slot=slot_index)
+            snap_sd = current_sd.backup(backup_dir, opid=snap_opid, slot=slot_index)
 
-            self._refresh()
-            self.status_var.set("已从备份恢复 ✓")
-            messagebox.showinfo("成功", "已从备份恢复存档")
+            # 两阶段写入临时文件，再 os.replace
+            replace_files_atomically([
+                (pair["gamedata"], gd_path),
+                (pair["slotdata"], sd_path),
+            ])
+
+            # 回读校验：重新 SaveFile 载入，且长度必须与备份源一致
+            expected_gd = os.path.getsize(pair["gamedata"])
+            expected_sd = os.path.getsize(pair["slotdata"])
+            new_gd = SaveFile(gd_path)
+            new_sd = SaveFile(sd_path)
+            if new_gd.file_size != expected_gd or new_sd.file_size != expected_sd:
+                raise SaveError(
+                    f"恢复后长度校验失败：GameData {new_gd.file_size}/{expected_gd}，"
+                    f"{slot_file} {new_sd.file_size}/{expected_sd}"
+                )
         except Exception as e:
-            messagebox.showerror("恢复失败", str(e))
+            rollback_error = None
+            rollback_ok = False
+            if snap_gd and snap_sd:
+                try:
+                    replace_files_atomically([(snap_gd, gd_path), (snap_sd, sd_path)])
+                    rb_gd = SaveFile(gd_path)
+                    rb_sd = SaveFile(sd_path)
+                    if (rb_gd.file_size == os.path.getsize(snap_gd)
+                            and rb_sd.file_size == os.path.getsize(snap_sd)):
+                        rollback_ok = True
+                    else:
+                        rollback_error = "回滚后长度校验失败"
+                except Exception as re:
+                    rollback_error = re
+            if rollback_error:
+                messagebox.showerror(
+                    "恢复失败且回滚失败",
+                    f"{e}\n\n回滚也失败了：{rollback_error}\n"
+                    f"恢复前快照位于：{backup_dir}"
+                )
+            elif rollback_ok:
+                messagebox.showerror(
+                    "恢复失败",
+                    f"{e}\n\n已用恢复前快照回滚，存档保持恢复前状态。"
+                )
+            else:
+                messagebox.showerror("恢复失败", str(e))
+            return
+
+        # 恢复成功后清掉脏标记，再统一重载
+        self._money_items_dirty = False
+        self._chips_dirty = False
+        self._refresh()
+        self.status_var.set("已从备份恢复 ✓")
+        messagebox.showinfo(
+            "成功",
+            f"已从备份恢复存档。\n恢复前快照：{os.path.basename(snap_gd)} / "
+            f"{os.path.basename(snap_sd)}"
+        )
 
     def _manual_backup(self):
         if not self.gamedata:
             return
-        folder = self.save_folder.get()
-        backup_dir = os.path.abspath(os.path.join(folder, "..", SAVE_FOLDER_NAME + "_backup"))
-        b1 = self.gamedata.backup(backup_dir)
-        msg = f"已备份 GameData → {os.path.basename(b1)}"
-        if self.slotdata:
-            b2 = self.slotdata.backup(backup_dir)
-            msg += f"\n已备份 SlotData → {os.path.basename(b2)}"
-        messagebox.showinfo("备份完成", msg)
+        backup_dir = self._backup_dir()
+        slot_index = self.cur_slot.get()
+        opid = new_operation_id()
+        try:
+            b1 = self.gamedata.backup(backup_dir, opid=opid, slot=slot_index)
+            msg = f"已备份 GameData → {os.path.basename(b1)}"
+            if self.slotdata:
+                b2 = self.slotdata.backup(backup_dir, opid=opid, slot=slot_index)
+                msg += f"\n已备份 SlotData → {os.path.basename(b2)}"
+            messagebox.showinfo("备份完成", msg)
+        except Exception as e:
+            messagebox.showerror("备份失败", str(e))
 
     # ======================== 启动 ========================
 
