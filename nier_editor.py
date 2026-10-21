@@ -8,16 +8,16 @@ import os
 import shutil
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox
 from tkinter import filedialog
 
 import ttkbootstrap as tb
+import ttkbootstrap as ttk          # bootstyle 只对 ttkbootstrap 的控件生效（1.x / 2.x 都可用）
 from ttkbootstrap.constants import *
-from ttkbootstrap.scrolled import ScrolledFrame
 
 from constants import *
-from save_io import SaveFile
-from item_data import ITEM_NAMES, ITEM_CATEGORIES, get_item_name, get_category
+from save_io import SaveFile, SaveError
+from item_data import ITEM_NAMES, CATEGORY_ORDER, get_item_name, get_category, is_weapon
 from chip_data import REGISTRY as CHIPS
 from chip_data import CHIP_EFFECTS, CHIP_RECORD_SIZE
 
@@ -129,7 +129,7 @@ class NierSaveEditor:
 
         ttk.Label(search_frame, text="分类:").pack(side=LEFT, padx=(10, 5))
         self.item_cat_var = tk.StringVar(value="全部")
-        cats = ["全部"] + list(ITEM_CATEGORIES.keys())
+        cats = ["全部"] + list(CATEGORY_ORDER)
         cb = ttk.Combobox(search_frame, textvariable=self.item_cat_var, values=cats, width=15, state="readonly")
         cb.pack(side=LEFT, padx=5)
         cb.bind('<<ComboboxSelected>>', lambda e: self._refresh_items())
@@ -294,10 +294,11 @@ class NierSaveEditor:
         try:
             self.gamedata = SaveFile(gd_path)
             self._switch_slot()
-            msg = f"已加载存档 — {len(self.gamedata._data):,} 字节"
-            if fsize < SaveFile._MIN_SAFE_SIZE:
-                msg += f"（原始 {fsize:,} 字节，已自动扩容 🩹）"
-            self.status_var.set(msg)
+            self.status_var.set(f"已加载存档 — {len(self.gamedata._data):,} 字节")
+        except SaveError as e:
+            self.gamedata = None
+            self.status_var.set("存档格式不符，已拒绝载入")
+            messagebox.showerror("不是有效的存档", str(e))
         except Exception as e:
             self.status_var.set(f"加载失败: {e}")
             messagebox.showerror("加载失败", str(e))
@@ -315,10 +316,13 @@ class NierSaveEditor:
         folder = self.save_folder.get()
         slot_file = SLOT_FILES[new_slot]
         slot_path = os.path.join(folder, slot_file)
+        self.slotdata = None
         if os.path.isfile(slot_path):
-            self.slotdata = SaveFile(slot_path)
-        else:
-            self.slotdata = None
+            try:
+                self.slotdata = SaveFile(slot_path)
+            except SaveError as e:
+                self.status_var.set(f"{slot_file} 无效，已跳过")
+                messagebox.showwarning("存档位无效", str(e))
         self._loaded_slot = new_slot
         self._money_items_dirty = False
         self._chips_dirty = False
@@ -581,11 +585,20 @@ class NierSaveEditor:
             if self._money_items_dirty:
                 self.gamedata.sync_money_items_from(self.slotdata)
 
-            # 写入两个文件
-            self.gamedata.save()
-            self.slotdata.save()
+            # 只写真正改动过的文件，避免无谓地重写另一个文件
+            written = []
+            if self.gamedata.modified:
+                self.gamedata.save()
+                written.append(GAMEDATA_FILE)
+            if self.slotdata.modified:
+                self.slotdata.save()
+                written.append(slot_file)
 
-            msg = f"保存成功！\nGameData 备份: {os.path.basename(gd_backup)}\nSlotData 备份: {os.path.basename(sd_backup)}"
+            msg = (
+                f"保存成功！已写入：{'、'.join(written) or '（无改动）'}\n"
+                f"GameData 备份: {os.path.basename(gd_backup)}\n"
+                f"SlotData 备份: {os.path.basename(sd_backup)}"
+            )
             messagebox.showinfo("成功", msg)
             self.status_var.set(f"已保存 {slot_file} ✓")
             # 重置脏标记
@@ -607,27 +620,42 @@ class NierSaveEditor:
             messagebox.showwarning("无备份", "备份文件夹为空")
             return
 
-        if not messagebox.askyesno("恢复备份", f"将恢复最新备份 ({backups[0]})。\n确定吗？"):
+        # 按时间戳配对：必须 GameData 和当前存档位的 SlotData 出自同一次备份
+        import re
+        pat = re.compile(r'^(?P<base>.+)_(?P<ts>\d{8}_\d{6})\.dat$')
+        groups: dict[str, dict[str, str]] = {}
+        for f in backups:
+            m = pat.match(f)
+            if m:
+                groups.setdefault(m.group('ts'), {})[m.group('base')] = f
+
+        slot_file = SLOT_FILES[self.cur_slot.get()]
+        slot_base = slot_file.replace('.dat', '')
+        pairs = [
+            (ts, files) for ts, files in sorted(groups.items(), reverse=True)
+            if 'GameData' in files and slot_base in files
+        ]
+        if not pairs:
+            messagebox.showwarning(
+                "无可用备份",
+                f"备份文件夹里没有「GameData + {slot_file}」成对的备份，无法安全恢复。"
+            )
+            return
+
+        ts, files = pairs[0]
+        readable = ts.replace('_', ' ')
+        if not messagebox.askyesno(
+            "恢复备份",
+            f"将把存档回滚到 {readable} 的那次备份：\n"
+            f"  {files['GameData']}\n  {files[slot_base]}\n\n确定吗？"
+        ):
             return
 
         try:
-            # 找到最新的 GameData 和 SlotData 备份
-            import re
-            gd_backups = [f for f in backups if f.startswith('GameData')]
-            sd_backups = [f for f in backups if f.startswith('SlotData')]
-            
-            if gd_backups:
-                src = os.path.join(backup_dir, gd_backups[0])
-                dst = os.path.join(folder, 'GameData.dat')
-                shutil.copy2(src, dst)
-            
-            slot_file = SLOT_FILES[self.cur_slot.get()]
-            slot_base = slot_file.replace('.dat', '')
-            sd_match = [f for f in sd_backups if f.startswith(slot_base)]
-            if sd_match:
-                src = os.path.join(backup_dir, sd_match[0])
-                dst = os.path.join(folder, slot_file)
-                shutil.copy2(src, dst)
+            shutil.copy2(os.path.join(backup_dir, files['GameData']),
+                         os.path.join(folder, 'GameData.dat'))
+            shutil.copy2(os.path.join(backup_dir, files[slot_base]),
+                         os.path.join(folder, slot_file))
 
             self._refresh()
             self.status_var.set("已从备份恢复 ✓")

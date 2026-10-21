@@ -10,12 +10,16 @@ from datetime import datetime
 from constants import *
 
 
+class SaveError(Exception):
+    """存档读写错误（文件不合法 / 写入失败）"""
+
+
 class SaveFile:
     """封装存档文件的二进制读写"""
 
-    # 不同文件类型的安全大小
+    # 不同文件类型需要的最小大小（小于它就说明不是有效存档，宁可拒绝也不要猜）
     _MIN_SAFE_SIZE: int = OFFSET_ITEMS_END + 4  # 0x61173 = 397,683 (GameData)
-    _SLOT_SAFE_SIZE: int = OFFSET_CHIPS_START + MAX_CHIPS * CHIP_RECORD_SIZE  # 0x324BC + 512*48 = 230,588
+    _SLOT_SAFE_SIZE: int = OFFSET_CHIPS_START + MAX_CHIPS * CHIP_RECORD_SIZE  # 0x384D4 = 230,588
 
     def __init__(self, filepath: str):
         self.filepath = filepath
@@ -25,15 +29,17 @@ class SaveFile:
         self._data = bytearray(raw)
         # 判断文件类型，使用不同的安全大小
         fname = os.path.basename(filepath).lower()
-        if fname.startswith('slotdata'):
-            safe_size = self._SLOT_SAFE_SIZE
-        else:
-            safe_size = self._MIN_SAFE_SIZE
-        # 极小存档自动零填充到安全大小
-        if len(self._data) < safe_size:
-            self._data.extend(b'\x00' * (safe_size - len(self._data)))
+        is_slot = fname.startswith('slotdata')
+        required = self._SLOT_SAFE_SIZE if is_slot else self._MIN_SAFE_SIZE
+        if self._original_size < required:
+            raise SaveError(
+                f"{fname} 只有 {self._original_size:,} 字节，"
+                f"小于该类型存档的最小长度 {required:,} 字节。\n"
+                f"这可能不是有效的尼尔存档，或文件已被截断 —— 已拒绝载入，未做任何修改。"
+            )
         self._modified = False
-        self._save_size = max(self._original_size, safe_size)
+        # 永远按原文件长度写回，绝不静默扩容
+        self._save_size = self._original_size
 
     def _check_bounds(self, offset: int, size: int, name: str = "") -> None:
         """边界检查，越界时抛出明确的 ValueError"""
@@ -55,25 +61,37 @@ class SaveFile:
 
     # ======================== 道具 ========================
 
+    def _max_items(self) -> int:
+        """当前文件实际能容纳的道具记录数（SlotData 只有 512 条，再往后是芯片区）"""
+        usable = max(0, (len(self._data) - OFFSET_ITEMS_START) // ITEM_RECORD_SIZE)
+        cap = MAX_ITEMS
+        if os.path.basename(self.filepath).lower().startswith('slotdata'):
+            cap = min(cap, SLOT_MAX_ITEMS)
+        return min(cap, usable)
+
     def get_items(self, limit: int = MAX_ITEMS) -> list[tuple[int, int]]:
         """返回所有道具: [(item_id, amount), ...] (最多 limit 条)"""
         items = []
-        for i in range(min(limit, MAX_ITEMS)):
+        count = min(limit, self._max_items())
+        for i in range(count):
             offset = OFFSET_ITEMS_START + i * ITEM_RECORD_SIZE
-            self._check_bounds(offset, ITEM_RECORD_SIZE, f"读取道具[{i}]")
             item_id = struct.unpack_from('<H', self._data, offset)[0]
             amount = self._data[offset + 8]
             items.append((item_id, amount))
         return items
 
     def get_owned_items(self) -> list[tuple[int, int]]:
-        """只返回数量 > 0 的道具（排除空槽和未初始化槽）"""
+        """只返回数量 > 0 的道具。
+
+        注意：item_id == 0 是小恢复药，是合法道具，不能按 0 过滤；
+        空槽位的判定只认 0xFFFF 或数量 0。
+        """
         return [(iid, amt) for iid, amt in self.get_items()
-                if amt > 0 and iid != ITEM_EMPTY_ID and iid != 0]
+                if amt > 0 and iid != ITEM_EMPTY_ID]
 
     def get_item(self, item_id: int) -> int:
         """查找指定道具的数量（第一个匹配），找不到返回0"""
-        for i in range(MAX_ITEMS):
+        for i in range(self._max_items()):
             offset = OFFSET_ITEMS_START + i * ITEM_RECORD_SIZE
             sid = struct.unpack_from('<H', self._data, offset)[0]
             if sid == item_id:
@@ -105,11 +123,16 @@ class SaveFile:
                 self._data[offset + 8] = new_amt
                 self._modified = True
                 return True
-        # 找空槽位（只认 0xFFFF 为空，0x0000 是合法道具 Small Recovery）
-        for i in range(max_search):
-            offset = OFFSET_ITEMS_START + i * ITEM_RECORD_SIZE
-            sid = struct.unpack_from('<H', self._data, offset)[0]
-            if sid == ITEM_EMPTY_ID:
+        # 找空槽位：优先 0xFFFF，其次「id=0 且数量=0」的未初始化槽
+        # （0x0000 本身是小恢复药，只有数量为 0 时才算空）
+        for empty_id, need_zero_amount in ((ITEM_EMPTY_ID, False), (0, True)):
+            for i in range(max_search):
+                offset = OFFSET_ITEMS_START + i * ITEM_RECORD_SIZE
+                sid = struct.unpack_from('<H', self._data, offset)[0]
+                if sid != empty_id:
+                    continue
+                if need_zero_amount and self._data[offset + 8] != 0:
+                    continue
                 self.set_item(i, item_id, min(amount, MAX_ITEM_AMOUNT))
                 return True
         return False  # 没空位了
@@ -144,17 +167,27 @@ class SaveFile:
 
     # ======================== 芯片 (SlotData only) ========================
 
+    @staticmethod
+    def _is_empty_chip(cid1: int, cid2: int, cid3: int) -> bool:
+        """空槽判定：前三个 int32 全为 -1（0xFF…），或全为 0（未初始化区域）"""
+        return (cid1 == -1 and cid2 == -1 and cid3 == -1) or (cid1 == 0 and cid2 == 0 and cid3 == 0)
+
+    def _max_chips(self) -> int:
+        """当前文件实际能容纳的芯片记录数"""
+        usable = max(0, (len(self._data) - OFFSET_CHIPS_START) // CHIP_RECORD_SIZE)
+        return min(MAX_CHIPS, usable)
+
     def get_chips(self) -> list[dict]:
         """返回所有芯片记录（含空槽）"""
         chips = []
-        for i in range(MAX_CHIPS):
+        for i in range(self._max_chips()):
             offset = OFFSET_CHIPS_START + i * CHIP_RECORD_SIZE
             raw = self._data[offset:offset + CHIP_RECORD_SIZE]
             cid1, cid2, cid3, lv, sz, ox, oy, oz, p1, p2, p3, p4 = struct.unpack_from('<12i', raw)
             chips.append({
                 'index': i,
                 'raw': bytes(raw),
-                'empty': (cid1 == -1 and cid2 == -1 and cid3 == -1),
+                'empty': self._is_empty_chip(cid1, cid2, cid3),
                 'chip_id_1': cid1,
                 'chip_id_2': cid2,
                 'type_id': cid3,
@@ -174,22 +207,21 @@ class SaveFile:
         """添加芯片到第一个空槽，返回是否成功"""
         if len(chip_bytes) != CHIP_RECORD_SIZE:
             raise ValueError(f"Chip data must be {CHIP_RECORD_SIZE} bytes")
-        for i in range(MAX_CHIPS):
+        for i in range(self._max_chips()):
             offset = OFFSET_CHIPS_START + i * CHIP_RECORD_SIZE
             cid1, cid2, cid3 = struct.unpack_from('<3i', self._data, offset)
-            if cid1 == -1 and cid2 == -1 and cid3 == -1:  # 空槽（与 get_chips() 一致）
+            if self._is_empty_chip(cid1, cid2, cid3):
                 self._data[offset:offset + CHIP_RECORD_SIZE] = chip_bytes
                 self._modified = True
                 return True
         return False
 
     def remove_chip(self, index: int):
-        """删除指定位置的芯片（写空记录）"""
+        """删除指定位置的芯片（写空记录：全部 0xFF，判空与 add_chip 一致）"""
         if not (0 <= index < MAX_CHIPS):
             raise IndexError(f"Chip index must be 0-{MAX_CHIPS-1}")
         offset = OFFSET_CHIPS_START + index * CHIP_RECORD_SIZE
-        empty = b'\xff' * 44 + b'\x00' * 4
-        self._data[offset:offset + CHIP_RECORD_SIZE] = empty
+        self._data[offset:offset + CHIP_RECORD_SIZE] = b'\xff' * CHIP_RECORD_SIZE
         self._modified = True
 
     def set_chip(self, index: int, chip_bytes: bytes):
@@ -205,9 +237,24 @@ class SaveFile:
     # ======================== 持久化 ========================
 
     def save(self):
-        """保存到原文件（按文件类型写入合适大小）"""
-        with open(self.filepath, 'wb') as f:
-            f.write(self._data[:self._save_size])
+        """原子写入：先写同目录临时文件并落盘，再替换原文件。
+
+        任何一步失败都不会留下半截的存档。
+        """
+        tmp = self.filepath + '.tmp'
+        try:
+            with open(tmp, 'wb') as f:
+                f.write(self._data[:self._save_size])
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.filepath)
+        except Exception:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            raise
         self._modified = False
 
     def backup(self, backup_dir: str) -> str:
