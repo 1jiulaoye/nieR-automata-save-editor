@@ -193,7 +193,25 @@ Win11 的 Smart App Control 只放行有数字签名的程序，PyInstaller 打�
    ⚠️ 注意：SAC 关掉后只能重装系统才能再打开，自己权衡
 4. **从源码跑**：装 Python 3.11+，`pip install "ttkbootstrap>=1.10,<3"`，然后 `python nier_editor.py`
 
-关于自签名：技术上能做（自签证书 + signtool），但 SAC / SmartScreen 只信任微软信任链里的 CA，自签证书不在其中；就算用户手动把证书装进“受信任的根证书颁发机构”，SAC 依然会拦。所以只有买 CA 证书才有用。
+**为什么这些办法有效 / 无效**
+
+微软官方对 SAC 的判定顺序是：先问云端信誉服务，能给出明确结论就按结论执行；判断不了才看签名 —— 有有效签名就放行，没签名或签名无效就拦（[MS FAQ](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions)）。所以：
+
+- **自签名没用**：自签证书的根是你自己，不在微软信任链里；手动装进「受信任的根证书颁发机构」也只影响本机的 UAC/属性显示，SAC 依然拦
+- **绿色版有效**：跑的是 Python 官方的 `pythonw.exe`，它在微软信任链里，签名有效 → 直接放行。这也是社区里最常用的做法（“用签名解释器跑未签名代码”），参考 [dev.to 这篇](https://dev.to/milkyway008/windows-smart-app-control-is-blocking-your-python-clis-os-error-4551-what-to-do-4bkj) 和 [note.com 这篇](https://note.com/liuk_net/n/n5b11e4018dfc?hl=en)
+- **没有白名单**：微软明确写了 “There is currently no way to bypass Smart App Control protection for individual apps”，别去找“加入信任”的开关，没有
+
+**长期方案（按成本排）**
+
+| 方案 | 成本 | 说明 |
+|---|---|---|
+| 绿色版 / 源码运行 | 0 | 现在就能用，缺点是有个 `python\` 目录、体积 20MB+ |
+| [SignPath Foundation](https://signpath.org/) 免费 OSS 签名 | 0 | 面向开源项目：OSI 许可、无专有组件、持续维护、已发布、有文档。证书签发给 SignPath Foundation（他们是发布者），构建要走他们的 CI |
+| [Azure Artifact Signing](https://azure.microsoft.com/en-us/pricing/details/artifact-signing/)（原 Trusted Signing） | 约 $9.99/月起 | 公信证书目前只对部分国家/地区的组织开放（美国、加拿大、欧盟、英国、澳、新西兰、日本、韩国、新加坡、瑞士），中国大陆不在名单里 |
+| 上架 Microsoft Store | 一次性 $19 | Store 分发的应用由商店签名，不受 SAC 拦；但要过审核，存档修改器这类工具能不能过不好说 |
+| 传统 OV / EV 代码签名证书 | 每年几百到几千 | 最直接，EV 还能立刻拿到 SmartScreen 信誉 |
+
+**顺便更正一句**：以前流传“SAC 关掉后只能重装系统才能再开”。微软 2026 年的 FAQ 已经改成「近期 Windows 更新允许在安全中心里重新开启，不需要重装」；社区仍有相反经验，所以别把它当可靠开关用。
 
 长期唯一的“正规”解法是买代码签名证书（受信任 CA，一年几百到几千元），不会为了免费工具去做。
 
