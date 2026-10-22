@@ -205,7 +205,7 @@ Win11 的 Smart App Control 只放行有数字签名的程序，PyInstaller 打�
 
 | 方案 | 成本 | 说明 |
 |---|---|---|
-| 绿色版 / 源码运行 | 0 | 现在就能用，缺点是有个 `python\` 目录、体积 20MB+ |
+| 绿色版 / 源码运行 | 0 | 现在就能用，缺点是有个 `python` 目录、体积 20MB+ |
 | [SignPath Foundation](https://signpath.org/) 免费 OSS 签名 | 0 | 面向开源项目：OSI 许可、无专有组件、持续维护、已发布、有文档。证书签发给 SignPath Foundation（他们是发布者），构建要走他们的 CI |
 | [Azure Artifact Signing](https://azure.microsoft.com/en-us/pricing/details/artifact-signing/)（原 Trusted Signing） | 约 $9.99/月起 | 公信证书目前只对部分国家/地区的组织开放（美国、加拿大、欧盟、英国、澳、新西兰、日本、韩国、新加坡、瑞士），中国大陆不在名单里 |
 | 上架 Microsoft Store | 一次性 $19 | Store 分发的应用由商店签名，不受 SAC 拦；但要过审核，存档修改器这类工具能不能过不好说 |
