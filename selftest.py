@@ -116,6 +116,8 @@ def _install_gui_stubs() -> None:
     tkmod.END = "end"
     tkmod.LEFT = "left"
     tkmod.RIGHT = "right"
+    tkmod.TOP = "top"
+    tkmod.BOTTOM = "bottom"
     tkmod.X = "x"
     tkmod.Y = "y"
     tkmod.BOTH = "both"

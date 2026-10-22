@@ -5,6 +5,7 @@ GUI 主界面 — ttkbootstrap flatly 浅色主题
 """
 
 import os
+import sys
 
 import tkinter as tk
 from tkinter import messagebox
@@ -55,14 +56,54 @@ def _shorten_path(path: str, limit: int = 46) -> str:
     return f"{path[:head]}…{path[-tail:]}"
 
 
+def _enable_dpi_awareness() -> None:
+    """在创建 Tk 之前声明 DPI 感知，避免 Windows 位图缩放把窗口放大。
+
+    只在 Windows 上执行；Linux/macOS 直接跳过。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _fit_window_to_screen(screen_w: int, screen_h: int) -> tuple[int, int, int, int]:
+    """按屏幕尺寸计算窗口大小与居中位置：返回 (w, h, x, y)。"""
+    screen_w = max(1, int(screen_w))
+    screen_h = max(1, int(screen_h))
+    w = min(940, int(screen_w * 0.92))
+    h = min(680, int(screen_h * 0.86))
+    x = max(0, (screen_w - w) // 2)
+    y = max(0, (screen_h - h) // 2)
+    return w, h, x, y
+
+
 class NierSaveEditor:
     """主窗口"""
 
     def __init__(self):
+        # 必须在 Tk 创建前声明 DPI 感知（仅 Windows 生效）
+        _enable_dpi_awareness()
+
         self.root = tb.Window(themename="flatly")
         self.root.title("尼尔存档修改器")
-        self.root.geometry("940x660")
-        self.root.minsize(840, 600)
+
+        # 窗口尺寸随屏幕自适应：小屏不超出，大屏也不无限放大；居中显示
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        win_w, win_h, win_x, win_y = _fit_window_to_screen(screen_w, screen_h)
+        self.root.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+        self.root.minsize(720, 480)
+        self.root.resizable(True, True)
         self.root.configure(background=UI_BG)
 
         # 状态
@@ -76,10 +117,14 @@ class NierSaveEditor:
         self._chips_dirty = False        # 芯片被改过
         self._slot_buttons = []
         self._corpse_window = None
+        self._money_font_size = 36
+        self._money_entry_font_size = 11
 
         self._configure_fonts()
         self._configure_styles()
         self._build_ui()
+        self._update_money_font()
+        self.root.bind("<Configure>", self._on_root_configure, add="+")
         self._auto_detect_folder()
 
     # ======================== 全局样式 ========================
@@ -121,7 +166,8 @@ class NierSaveEditor:
         style.configure("Section.TLabel", background=UI_CARD,
                         foreground=UI_TEXT, font=(UI_FONT, 12, "bold"))
         style.configure("Money.TLabel", background=UI_CARD,
-                        foreground=UI_TEXT, font=(UI_FONT, -36, "bold"))
+                        foreground=UI_TEXT,
+                        font=(UI_FONT, -self._money_font_size, "bold"))
 
         # 按钮
         style.configure(
@@ -290,13 +336,17 @@ class NierSaveEditor:
     # ======================== UI 构建 ========================
 
     def _build_ui(self):
-        # 1) 顶栏：56px 白底 + 1px 底部分隔线
-        topbar = ttk.Frame(self.root, style="TopBar.TFrame", height=56)
-        topbar.pack(fill=X, side=tk.TOP)
-        topbar.pack_propagate(False)
+        # 根布局用 grid：顶栏/状态栏按内容取高，只有中间 notebook 伸缩。
+        # 这样即使窗口很矮，状态栏和「备份 ▾」也不会被 notebook 顶出窗口。
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(2, weight=1)
+
+        # 1) 顶栏：白底 + 1px 底部分隔线（高度随内容，不写死）
+        topbar = ttk.Frame(self.root, style="TopBar.TFrame")
+        topbar.grid(row=0, column=0, sticky="ew")
 
         top_line = tk.Frame(self.root, background=UI_BORDER, height=1)
-        top_line.pack(fill=X, side=tk.TOP)
+        top_line.grid(row=1, column=0, sticky="ew")
 
         top_inner = ttk.Frame(topbar, style="TopBar.TFrame")
         top_inner.pack(fill=BOTH, expand=True, padx=SPACE_OUTER)
@@ -335,8 +385,9 @@ class NierSaveEditor:
 
         # 2) 内容区：四个 tab
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(
-            fill=BOTH, expand=True, padx=SPACE_OUTER, pady=SPACE_BLOCK,
+        self.notebook.grid(
+            row=2, column=0, sticky="nsew",
+            padx=SPACE_OUTER, pady=SPACE_BLOCK,
         )
 
         self.money_tab = ttk.Frame(
@@ -363,13 +414,12 @@ class NierSaveEditor:
         self.notebook.add(self.chip_tab, text="芯片")
         self._build_chip_tab()
 
-        # 3) 状态栏：左侧状态 + 右侧「备份 ▾」
-        status = ttk.Frame(self.root, style="Status.TFrame", height=40)
-        status.pack(fill=X, side=BOTTOM)
-        status.pack_propagate(False)
-
+        # 3) 状态栏：左侧状态 + 右侧「备份 ▾」；按内容取高，始终完整可见
         status_line = tk.Frame(self.root, background=UI_BORDER, height=1)
-        status_line.pack(fill=X, side=BOTTOM)
+        status_line.grid(row=3, column=0, sticky="ew")
+
+        status = ttk.Frame(self.root, style="Status.TFrame")
+        status.grid(row=4, column=0, sticky="ew")
 
         status_inner = ttk.Frame(status, style="Status.TFrame")
         status_inner.pack(fill=BOTH, expand=True, padx=SPACE_OUTER)
@@ -377,7 +427,7 @@ class NierSaveEditor:
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(
             status_inner, textvariable=self.status_var, style="Muted.TLabel",
-        ).pack(side=LEFT, pady=10)
+        ).pack(side=LEFT, pady=7)
 
         backup_btn = ttk.Menubutton(
             status_inner, text="备份 ▾", style="Backup.TMenubutton",
@@ -386,10 +436,47 @@ class NierSaveEditor:
         backup_menu.add_command(label="手动备份", command=self._manual_backup)
         backup_menu.add_command(label="恢复备份", command=self._restore_backup)
         backup_btn.configure(menu=backup_menu)
-        backup_btn.pack(side=RIGHT, pady=7)
+        backup_btn.pack(side=RIGHT, pady=6)
 
         self._update_slot_buttons()
         self._update_path_label()
+
+    def _on_root_configure(self, event):
+        """窗口尺寸变化时，按当前高度收缩金币大字号/输入行。"""
+        if event.widget is not self.root:
+            return
+        self._update_money_font(event.height)
+
+    def _update_money_font(self, height=None):
+        if height is None:
+            height = self.root.winfo_height()
+        try:
+            height = max(1, int(height))
+        except (TypeError, ValueError):
+            height = 1
+        # 600px 以上用 36px；窗口越矮字号越小，但绝不低于 24px
+        money_px = max(24, min(36, int(height * 0.06)))
+        entry_pt = max(9, min(11, money_px // 3))
+        width = max(10, min(14, int(self.root.winfo_width() / 72)))
+        state = (money_px, entry_pt, width)
+        if getattr(self, "_money_font_state", None) == state:
+            return
+        self._money_font_state = state
+        self._money_font_size = money_px
+        self._money_entry_font_size = entry_pt
+        try:
+            ttk.Style().configure(
+                "Money.TLabel", background=UI_CARD, foreground=UI_TEXT,
+                font=(UI_FONT, -money_px, "bold"),
+            )
+        except Exception:
+            pass
+        entry = getattr(self, "money_entry", None)
+        if entry is not None:
+            try:
+                entry.configure(font=(UI_FONT, entry_pt), width=width)
+            except Exception:
+                pass
 
     def _update_path_label(self):
         if not hasattr(self, "path_label"):
@@ -454,22 +541,26 @@ class NierSaveEditor:
     # ======================== 道具 Tab ========================
 
     def _build_item_tab(self):
-        # 顶部：搜索 / 分类 / 显示全部 + 右侧添加道具
+        # 顶部：搜索 / 分类 / 显示全部 + 添加道具。
+        # 窄窗口下拆成两行（每行仍可横向排布），避免右侧「添加」被 720px 挤掉。
         top = ttk.Frame(self.item_tab, style="Card.TFrame")
         top.pack(fill=X, pady=(0, SPACE_BLOCK))
 
-        ttk.Label(top, text="搜索", style="Field.TLabel").pack(side=LEFT)
+        top_filter = ttk.Frame(top, style="Card.TFrame")
+        top_filter.pack(fill=X, side=tk.TOP)
+
+        ttk.Label(top_filter, text="搜索", style="Field.TLabel").pack(side=LEFT)
         self.item_search_var = tk.StringVar()
         ttk.Entry(
-            top, textvariable=self.item_search_var, width=22,
+            top_filter, textvariable=self.item_search_var, width=22,
         ).pack(side=LEFT, padx=(6, SPACE_BLOCK))
         self.item_search_var.trace_add("write", lambda *_: self._refresh_items())
 
-        ttk.Label(top, text="分类", style="Field.TLabel").pack(side=LEFT)
+        ttk.Label(top_filter, text="分类", style="Field.TLabel").pack(side=LEFT)
         self.item_cat_var = tk.StringVar(value="全部")
         cats = ["全部"] + list(CATEGORY_ORDER)
         cat_cb = ttk.Combobox(
-            top, textvariable=self.item_cat_var, values=cats,
+            top_filter, textvariable=self.item_cat_var, values=cats,
             width=12, state="readonly",
         )
         cat_cb.pack(side=LEFT, padx=(6, SPACE_BLOCK))
@@ -477,50 +568,29 @@ class NierSaveEditor:
 
         self.show_all_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            top, text="显示全部", variable=self.show_all_var,
+            top_filter, text="显示全部", variable=self.show_all_var,
             command=self._refresh_items,
         ).pack(side=LEFT)
 
-        # 右侧：先 pack 的靠最右
-        ttk.Button(
-            top, text="添加", style="Success.TButton",
-            command=self._add_item,
-        ).pack(side=RIGHT)
+        top_add = ttk.Frame(top, style="Card.TFrame")
+        top_add.pack(fill=X, side=tk.TOP, pady=(SPACE_INLINE, 0))
+        ttk.Label(top_add, text="添加道具", style="Field.TLabel").pack(side=LEFT)
         self.item_add_var = tk.StringVar()
         all_items = sorted(ITEM_NAMES.items(), key=lambda x: x[1])
         item_names = [f"{n} (0x{i:04X})" for i, n in all_items]
         self.item_add_cb = ttk.Combobox(
-            top, textvariable=self.item_add_var, values=item_names,
+            top_add, textvariable=self.item_add_var, values=item_names,
             width=30, state="readonly",
         )
-        self.item_add_cb.pack(side=RIGHT, padx=(SPACE_INLINE, SPACE_INLINE))
-        ttk.Label(top, text="添加道具", style="Field.TLabel").pack(side=RIGHT)
+        self.item_add_cb.pack(side=LEFT, padx=(6, SPACE_INLINE))
+        ttk.Button(
+            top_add, text="添加", style="Success.TButton",
+            command=self._add_item,
+        ).pack(side=LEFT)
 
-        # 中间：列表
-        list_wrap = ttk.Frame(self.item_tab, style="Card.TFrame")
-        list_wrap.pack(fill=BOTH, expand=True)
-        cols = ("名称", "数量", "ID")
-        self.item_tree = ttk.Treeview(
-            list_wrap, columns=cols, show="headings", height=10,
-            selectmode="browse",
-        )
-        self.item_tree.heading("名称", text="名称")
-        self.item_tree.heading("数量", text="数量")
-        self.item_tree.heading("ID", text="ID")
-        self.item_tree.column("名称", width=340, anchor="w")
-        self.item_tree.column("数量", width=90, anchor=CENTER)
-        self.item_tree.column("ID", width=110, anchor=CENTER)
-        self.item_tree.pack(side=LEFT, fill=BOTH, expand=True)
-
-        scrollbar = ttk.Scrollbar(
-            list_wrap, orient=VERTICAL, command=self.item_tree.yview,
-        )
-        self.item_tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=RIGHT, fill=Y)
-
-        # 底部：数量操作
+        # 底部先占位：矮窗口时优先保证「增加/减少/设为/尸体背包」可见
         bottom = ttk.Frame(self.item_tab, style="Card.TFrame")
-        bottom.pack(fill=X, pady=(SPACE_BLOCK, 0))
+        bottom.pack(fill=X, side=tk.BOTTOM, pady=(SPACE_BLOCK, 0))
 
         self.item_amount_var = tk.StringVar(value="1")
         ttk.Label(bottom, text="数量", style="Field.TLabel").pack(side=LEFT)
@@ -546,6 +616,28 @@ class NierSaveEditor:
             command=self._open_corpse_window,
         ).pack(side=RIGHT)
 
+        # 中间：列表（最后 pack，吃掉剩余空间）
+        list_wrap = ttk.Frame(self.item_tab, style="Card.TFrame")
+        list_wrap.pack(fill=BOTH, expand=True)
+        cols = ("名称", "数量", "ID")
+        self.item_tree = ttk.Treeview(
+            list_wrap, columns=cols, show="headings", height=10,
+            selectmode="browse",
+        )
+        self.item_tree.heading("名称", text="名称")
+        self.item_tree.heading("数量", text="数量")
+        self.item_tree.heading("ID", text="ID")
+        self.item_tree.column("名称", width=340, anchor="w")
+        self.item_tree.column("数量", width=90, anchor=CENTER)
+        self.item_tree.column("ID", width=110, anchor=CENTER)
+        self.item_tree.pack(side=LEFT, fill=BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(
+            list_wrap, orient=VERTICAL, command=self.item_tree.yview,
+        )
+        self.item_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=RIGHT, fill=Y)
+
     # ======================== 武器 Tab ========================
 
     def _build_weapon_tab(self):
@@ -558,33 +650,9 @@ class NierSaveEditor:
         )
         self.weapon_count_label.pack(side=LEFT, padx=(6, 0))
 
-        # 中间：列表
-        list_wrap = ttk.Frame(self.weapon_tab, style="Card.TFrame")
-        list_wrap.pack(fill=BOTH, expand=True)
-        cols = ("名称", "等级", "状态", "ID")
-        self.weapon_tree = ttk.Treeview(
-            list_wrap, columns=cols, show="headings", height=10,
-            selectmode="browse",
-        )
-        self.weapon_tree.heading("名称", text="名称")
-        self.weapon_tree.heading("等级", text="等级")
-        self.weapon_tree.heading("状态", text="状态")
-        self.weapon_tree.heading("ID", text="ID")
-        self.weapon_tree.column("名称", width=340, anchor="w")
-        self.weapon_tree.column("等级", width=80, anchor=CENTER)
-        self.weapon_tree.column("状态", width=100, anchor=CENTER)
-        self.weapon_tree.column("ID", width=110, anchor=CENTER)
-        self.weapon_tree.pack(side=LEFT, fill=BOTH, expand=True)
-
-        scrollbar = ttk.Scrollbar(
-            list_wrap, orient=VERTICAL, command=self.weapon_tree.yview,
-        )
-        self.weapon_tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=RIGHT, fill=Y)
-
-        # 底部：等级 + 添加 / 删除
+        # 底部先占位：矮窗口时优先保证等级 / 添加 / 删除可见
         bar = ttk.Frame(self.weapon_tab, style="Card.TFrame")
-        bar.pack(fill=X, pady=(SPACE_BLOCK, 0))
+        bar.pack(fill=X, side=tk.BOTTOM, pady=(SPACE_BLOCK, 0))
 
         ttk.Label(bar, text="等级 1-4", style="Field.TLabel").pack(side=LEFT)
         self.weapon_level_var = tk.IntVar(value=1)
@@ -618,6 +686,30 @@ class NierSaveEditor:
             bar, text="删除", style="Danger.TButton",
             command=self._remove_weapon,
         ).pack(side=LEFT)
+
+        # 中间：列表（最后 pack，吃掉剩余空间）
+        list_wrap = ttk.Frame(self.weapon_tab, style="Card.TFrame")
+        list_wrap.pack(fill=BOTH, expand=True)
+        cols = ("名称", "等级", "状态", "ID")
+        self.weapon_tree = ttk.Treeview(
+            list_wrap, columns=cols, show="headings", height=10,
+            selectmode="browse",
+        )
+        self.weapon_tree.heading("名称", text="名称")
+        self.weapon_tree.heading("等级", text="等级")
+        self.weapon_tree.heading("状态", text="状态")
+        self.weapon_tree.heading("ID", text="ID")
+        self.weapon_tree.column("名称", width=340, anchor="w")
+        self.weapon_tree.column("等级", width=80, anchor=CENTER)
+        self.weapon_tree.column("状态", width=100, anchor=CENTER)
+        self.weapon_tree.column("ID", width=110, anchor=CENTER)
+        self.weapon_tree.pack(side=LEFT, fill=BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(
+            list_wrap, orient=VERTICAL, command=self.weapon_tree.yview,
+        )
+        self.weapon_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=RIGHT, fill=Y)
 
     # ======================== 尸体背包（只读弹窗） ========================
 
@@ -723,33 +815,9 @@ class NierSaveEditor:
             side=RIGHT, padx=(0, 6),
         )
 
-        # 中间：列表
-        list_wrap = ttk.Frame(self.chip_tab, style="Card.TFrame")
-        list_wrap.pack(fill=BOTH, expand=True)
-        cols = ("名称", "等级", "格数", "效果")
-        self.chip_tree = ttk.Treeview(
-            list_wrap, columns=cols, show="headings", height=10,
-            selectmode="browse",
-        )
-        self.chip_tree.heading("名称", text="名称")
-        self.chip_tree.heading("等级", text="等级")
-        self.chip_tree.heading("格数", text="格数")
-        self.chip_tree.heading("效果", text="效果")
-        self.chip_tree.column("名称", width=260, anchor="w")
-        self.chip_tree.column("等级", width=70, anchor=CENTER)
-        self.chip_tree.column("格数", width=60, anchor=CENTER)
-        self.chip_tree.column("效果", width=380, anchor="w")
-        self.chip_tree.pack(side=LEFT, fill=BOTH, expand=True)
-
-        scrollbar = ttk.Scrollbar(
-            list_wrap, orient=VERTICAL, command=self.chip_tree.yview,
-        )
-        self.chip_tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=RIGHT, fill=Y)
-
-        # 底部：芯片下拉 + 等级 + 添加 / 删除
+        # 底部先占位：矮窗口时优先保证芯片下拉 + 等级 + 添加 / 删除可见
         bar = ttk.Frame(self.chip_tab, style="Card.TFrame")
-        bar.pack(fill=X, pady=(SPACE_BLOCK, 0))
+        bar.pack(fill=X, side=tk.BOTTOM, pady=(SPACE_BLOCK, 0))
 
         self.chip_add_var = tk.StringVar()
         common_names = sorted(CHIPS.common_names)
@@ -785,6 +853,30 @@ class NierSaveEditor:
             bar, text="删除", style="Danger.TButton",
             command=self._remove_chip,
         ).pack(side=LEFT)
+
+        # 中间：列表（最后 pack，吃掉剩余空间）
+        list_wrap = ttk.Frame(self.chip_tab, style="Card.TFrame")
+        list_wrap.pack(fill=BOTH, expand=True)
+        cols = ("名称", "等级", "格数", "效果")
+        self.chip_tree = ttk.Treeview(
+            list_wrap, columns=cols, show="headings", height=10,
+            selectmode="browse",
+        )
+        self.chip_tree.heading("名称", text="名称")
+        self.chip_tree.heading("等级", text="等级")
+        self.chip_tree.heading("格数", text="格数")
+        self.chip_tree.heading("效果", text="效果")
+        self.chip_tree.column("名称", width=260, anchor="w")
+        self.chip_tree.column("等级", width=70, anchor=CENTER)
+        self.chip_tree.column("格数", width=60, anchor=CENTER)
+        self.chip_tree.column("效果", width=380, anchor="w")
+        self.chip_tree.pack(side=LEFT, fill=BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(
+            list_wrap, orient=VERTICAL, command=self.chip_tree.yview,
+        )
+        self.chip_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=RIGHT, fill=Y)
 
     # ======================== 数据加载 ========================
 

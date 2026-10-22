@@ -74,13 +74,13 @@
 
 ## 下载与安装
 
-### 最新版本：v1.4.0
+### 最新版本：v1.4.1
 
 | 文件 | 大小 | 下载 |
 |------|------|------|
-| `nier-save-editor-v1.4-win64-portable.zip`（**绿色版，推荐**：用官方签名的 pythonw 启动，绕开 Smart App Control） | ~22 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.0/nier-save-editor-v1.4-win64-portable.zip) |
-| `nier-save-editor-v1.4-win64.zip`（单文件） | ~20 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.0/nier-save-editor-v1.4-win64.zip) |
-| `nier-save-editor-v1.4-win64-onedir.zip`（目录版，被 Smart App Control 拦时试这个） | ~20 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.0/nier-save-editor-v1.4-win64-onedir.zip) |
+| `nier-save-editor-v1.4-win64-portable.zip`（**绿色版，推荐**：用官方签名的 pythonw 启动，绕开 Smart App Control） | ~22 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.1/nier-save-editor-v1.4-win64-portable.zip) |
+| `nier-save-editor-v1.4-win64.zip`（单文件） | ~20 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.1/nier-save-editor-v1.4-win64.zip) |
+| `nier-save-editor-v1.4-win64-onedir.zip`（目录版，被 Smart App Control 拦时试这个） | ~20 MB | [⬇️ 点击下载](https://github.com/1jiulaoye/nieR-automata-save-editor/releases/download/v1.4.1/nier-save-editor-v1.4-win64-onedir.zip) |
 | 历史版本 | — | [Releases](https://github.com/1jiulaoye/nieR-automata-save-editor/releases) |
 
 > **系统要求**：Windows 8.1 / 10 / 11（64 位）
@@ -350,6 +350,7 @@ wine "C:\\Py311\\python.exe" -m PyInstaller --noconfirm --clean --onefile --wind
 
 | 版本 | 日期 | 更新内容 |
 |------|------|---------|
+| v1.4.1 | 2026-10 | 修复小屏/高缩放下窗口显示不全：加 DPI 感知、窗口尺寸按屏幕自适应并居中、minsize 降到 720×480 |
 | v1.4.0 | 2026-10 | 🎉 首个公开发布版。按真实存档重构布局（背包 256 / 尸体背包 / 武器表 39×20B / 芯片 256）；数据核对补 107 个道具 + 39 把武器；两阶段事务写入 + opid 备份 + manifest；恢复原子化；界面重做为简洁风格，更名「尼尔存档修改器」 |
 | v1.3 | 2026-05 | 修复数据同步：金币 / 道具以 SlotData 为准；切换存档提示保存 |
 | v1.2 | 2026-05 | 修复芯片数据解析（48 字节对齐）；添加芯片效果展示 |
