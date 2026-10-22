@@ -76,12 +76,26 @@ def _enable_dpi_awareness() -> None:
         pass
 
 
-def _fit_window_to_screen(screen_w: int, screen_h: int) -> tuple[int, int, int, int]:
-    """按屏幕尺寸计算窗口大小与居中位置：返回 (w, h, x, y)。"""
+def _query_dpi(root) -> float:
+    """取当前屏幕 DPI（96 = 100%，144 = 150%）；取不到就按 96 处理。"""
+    try:
+        return float(root.winfo_fpixels("1i"))
+    except Exception:
+        return 96.0
+
+
+def _fit_window_to_screen(screen_w: int, screen_h: int,
+                          scale: float = 1.0) -> tuple[int, int, int, int]:
+    """按屏幕尺寸与显示缩放计算窗口大小与居中位置：返回 (w, h, x, y)。
+
+    scale = DPI / 96：100% → 1.0，150% → 1.5。窗口按逻辑尺寸等比放大，
+    再被屏幕尺寸封顶，保证既不超出屏幕、也不会在高 DPI 屏上显得很小。
+    """
     screen_w = max(1, int(screen_w))
     screen_h = max(1, int(screen_h))
-    w = min(940, int(screen_w * 0.92))
-    h = min(680, int(screen_h * 0.86))
+    scale = min(3.0, max(1.0, float(scale)))
+    w = min(int(940 * scale), int(screen_w * 0.92))
+    h = min(int(660 * scale), int(screen_h * 0.86))
     x = max(0, (screen_w - w) // 2)
     y = max(0, (screen_h - h) // 2)
     return w, h, x, y
@@ -97,12 +111,23 @@ class NierSaveEditor:
         self.root = tb.Window(themename="flatly")
         self.root.title("尼尔存档修改器")
 
+        # 显示缩放：150% 屏幕下按 1.5 倍放大逻辑尺寸，同时让 Tk 按 DPI 渲染文字
+        dpi = _query_dpi(self.root)
+        self._ui_scale = min(3.0, max(1.0, dpi / 96.0))
+        try:
+            self.root.tk.call("tk", "scaling", dpi / 72.0)
+        except Exception:
+            pass
+
         # 窗口尺寸随屏幕自适应：小屏不超出，大屏也不无限放大；居中显示
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        win_w, win_h, win_x, win_y = _fit_window_to_screen(screen_w, screen_h)
+        win_w, win_h, win_x, win_y = _fit_window_to_screen(screen_w, screen_h, self._ui_scale)
         self.root.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
-        self.root.minsize(720, 480)
+        self.root.minsize(
+            min(int(720 * self._ui_scale), int(screen_w * 0.9)),
+            min(int(480 * self._ui_scale), int(screen_h * 0.85)),
+        )
         self.root.resizable(True, True)
         self.root.configure(background=UI_BG)
 
@@ -455,7 +480,8 @@ class NierSaveEditor:
         except (TypeError, ValueError):
             height = 1
         # 600px 以上用 36px；窗口越矮字号越小，但绝不低于 24px
-        money_px = max(24, min(36, int(height * 0.06)))
+        scale = getattr(self, "_ui_scale", 1.0)
+        money_px = int(max(24, min(36, int(height * 0.06))) * scale)
         entry_pt = max(9, min(11, money_px // 3))
         width = max(10, min(14, int(self.root.winfo_width() / 72)))
         state = (money_px, entry_pt, width)
